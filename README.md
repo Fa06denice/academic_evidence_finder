@@ -18,8 +18,8 @@ streamlit run app.py
 
 | Key | Where to get it | Required? |
 |-----|----------------|-----------|
-| `OPENAI_API_KEY` | [platform.openai.com](https://platform.openai.com) | ✅ Yes |
-| `SEMANTIC_SCHOLAR_API_KEY` | [semanticscholar.org/product/api](https://www.semanticscholar.org/product/api) | Recommended |
+| `GROQ_API_KEY` | _________ | ✅ Yes |
+| `SEMANTIC_SCHOLAR_API_KEY` | [semanticscholar.org/product/api](https://www.semanticscholar.org/product/api) | ✅ Yes |
 
 ## Features
 
