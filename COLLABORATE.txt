@@ -1,0 +1,158 @@
+
+# 🧠 CONTEXT — AI-Powered Scientific Research Assistant
+
+## Project Overview
+This project is a **Streamlit-based web application** that helps researchers verify scientific claims against peer-reviewed literature.
+The user enters a claim (e.g. "Coffee reduces Alzheimer's risk"), the app fetches relevant papers from Semantic Scholar,
+analyzes each one with an LLM (OpenAI GPT-4o), and returns a structured verdict: SUPPORTS / CONTRADICTS / NEUTRAL.
+
+---
+
+## 🗂️ Current Stack
+- **Frontend**: Streamlit (Python)
+- **Backend logic**: Python modules
+- **LLM**: Multi model via Groq API (3 keys rotation with 7 models)
+- **Paper search**: Semantic Scholar API
+- **Full text retrieval**: Unpaywall API (PDF) + PyMuPDF (text extraction)
+- **Caching**: Local JSON-based cache (`cache.py`) — per paperId + per claim
+- **Deployment**: Local / Streamlit Cloud
+
+---
+
+## 📁 File Structure
+
+```
+project/
+│
+├── app.py                  # Main Streamlit app — UI + orchestration
+├── analyzer.py             # LLM analysis logic (prompts, OpenAI calls)
+├── search.py               # Semantic Scholar API wrapper
+├── fulltext.py             # Unpaywall + PDF text extraction
+├── cache.py                # JSON cache for papers, fulltexts, analyses
+├── requirements.txt
+└── .env                    # OPENAI_API_KEY, UNPAYWALL_EMAIL
+```
+
+---
+
+## ✅ What Is Already Done 
+
+### Core Pipeline
+- [x] User enters a claim → Semantic Scholar returns top N papers
+- [x] Papers sorted by relevance + citation count
+- [x] Each paper analyzed by GPT-4o using abstract (+ full text if cached)
+- [x] Verdict returned: SUPPORTS / CONTRADICTS / NEUTRAL + justification + confidence score
+- [x] Results displayed as cards in Streamlit with color-coded badges
+
+### Performance
+- [x] Full text fetch (Unpaywall) removed from main pipeline — no longer blocks UX
+- [x] If full text is already in cache → used automatically in analysis
+- [x] JSON cache prevents redundant API calls across sessions
+
+### UI (Streamlit)
+- [x] Search bar + claim input
+- [x] Paper cards with title, authors, year, venue, abstract snippet
+- [x] Verdict badge (color-coded)
+- [x] Confidence score display
+- [x] Sidebar with search status + paper count
+
+---
+
+## 🚧 What Needs To Be Done
+
+### Step 2 — Background Full Text Enrichment (Streamlit)
+**Goal**: After results are displayed, silently fetch PDFs in background threads.
+**Details**:
+- Launch a `threading.Thread(daemon=True)` after `st.write(results)`
+- Thread calls `fulltext.fetch(pid, doi)` for each paper not yet in cache
+- Stores result via `cache.set_fulltext(pid, text)`
+- Sidebar shows `🔄 Enriching X papers in background...` badge
+- On next search for same claim → full texts are used automatically
+
+**Files to modify**: `app.py`, optionally `cache.py`
+
+---
+
+### Step 3 — Individual Paper Page + Contextual Chat
+**Goal**: Click on a paper → open a dedicated view with full text + ask questions about it.
+**Details**:
+- Use `st.dialog()` or `st.session_state` page routing
+- New prompt in `analyzer.py`: `PAPER_CHAT_PROMPT` — answers questions grounded in the paper
+- Chat input: "What methodology did they use?", "What are the limitations?"
+- Full text shown in expandable section
+- Citation export button (BibTeX / APA)
+
+**Files to modify**: `app.py`, `analyzer.py`
+
+---
+
+### Step 4 — User Dashboard + Search History
+**Goal**: Personal dashboard showing past searches, saved papers, and trends.
+**Details**:
+- History stored in local JSON or SQLite (`history.db`)
+- Dashboard page: list of past claims + verdicts + dates
+- Save/bookmark papers functionality
+- Tag papers manually (e.g. "relevant", "to read")
+- Simple stats: nb of searches, most cited papers found, verdict distribution chart
+
+**Files to modify**: `app.py`, new `history.py` module
+
+---
+
+### Step 5 — Next.js Frontend (Full Rewrite / Separate Frontend)
+**Goal**: Replace Streamlit with a proper web UI in Next.js for a production-grade experience.
+**Details**:
+
+#### Architecture
+- **Frontend**: Next.js 14+ (App Router), TailwindCSS, shadcn/ui
+- **Backend**: FastAPI (Python) — expose current logic as REST API endpoints
+- **Communication**: REST or tRPC
+
+#### API Endpoints to build (FastAPI)
+| Method | Route | Description |
+|--------|-------|-------------|
+| POST | `/search` | Search papers by claim |
+| GET | `/paper/{id}` | Get paper details + full text |
+| POST | `/analyze` | Analyze a paper against a claim |
+| POST | `/chat` | Chat about a specific paper |
+| GET | `/history` | Get user search history |
+| POST | `/bookmark` | Save a paper |
+
+#### Next.js Pages to build
+| Route | Description |
+|-------|-------------|
+| `/` | Home — search bar, hero |
+| `/results` | Results page — paper cards + verdicts |
+| `/paper/[id]` | Individual paper view + chat |
+| `/dashboard` | User history + saved papers |
+
+#### UI Components (shadcn/ui recommended)
+- `ClaimSearchBar` — main input with autocomplete
+- `PaperCard` — title, authors, verdict badge, confidence bar
+- `VerdictBadge` — SUPPORTS / CONTRADICTS / NEUTRAL with colors
+- `PaperChatDrawer` — side panel with chat interface
+- `HistoryTimeline` — dashboard list of past searches
+
+---
+
+## 🔑 Environment Variables Required
+```
+OPENAI_API_KEY=sk-...
+UNPAYWALL_EMAIL=your@email.com
+SEMANTIC_SCHOLAR_API_KEY=...   # optional but recommended
+```
+
+---
+
+## 🤝 Collaboration Notes
+- All LLM prompts are centralized in `analyzer.py` — modify prompts there only
+- Cache keys follow the pattern: `{paperId}_{claim_hash}` — do not change this format
+- When adding new API endpoints, document them in this file
+- UI language: French for labels/messages (target users are French-speaking researchers)
+- Code language: English (variables, functions, comments)
+
+---
+
+## 💡 Suggested Next Action
+Start with **Step 2** (background enrichment) — it's self-contained, low risk, and unlocks full text analysis
+for all subsequent sessions without any UX degradation.
