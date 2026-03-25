@@ -3,6 +3,8 @@
 An AI-powered research assistant that retrieves real scientific papers from
 Semantic Scholar and extracts grounded evidence for or against any claim.
 
+USE COLLABORATE.TXT for prompting your fav AI about this project
+
 ## Setup
 
 ```bash
