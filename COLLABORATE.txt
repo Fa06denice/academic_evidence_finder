@@ -1,17 +1,16 @@
-
 # 🧠 CONTEXT — AI-Powered Scientific Research Assistant
 
 ## Project Overview
 This project is a **Streamlit-based web application** that helps researchers verify scientific claims against peer-reviewed literature.
 The user enters a claim (e.g. "Coffee reduces Alzheimer's risk"), the app fetches relevant papers from Semantic Scholar,
-analyzes each one with an LLM (OpenAI GPT-4o), and returns a structured verdict: SUPPORTS / CONTRADICTS / NEUTRAL.
+analyzes each one with an LLM, and returns a structured verdict: SUPPORTS / CONTRADICTS / NEUTRAL.
 
 ---
 
 ## 🗂️ Current Stack
 - **Frontend**: Streamlit (Python)
 - **Backend logic**: Python modules
-- **LLM**: Multi model via Groq API (3 keys rotation with 7 models)
+- **LLM**: Multi-model via Groq API — 3 API keys rotation across 7 models
 - **Paper search**: Semantic Scholar API
 - **Full text retrieval**: Unpaywall API (PDF) + PyMuPDF (text extraction)
 - **Caching**: Local JSON-based cache (`cache.py`) — per paperId + per claim
@@ -25,22 +24,22 @@ analyzes each one with an LLM (OpenAI GPT-4o), and returns a structured verdict:
 project/
 │
 ├── app.py                  # Main Streamlit app — UI + orchestration
-├── analyzer.py             # LLM analysis logic (prompts, OpenAI calls)
+├── analyzer.py             # LLM analysis logic (prompts, Groq API calls)
 ├── search.py               # Semantic Scholar API wrapper
 ├── fulltext.py             # Unpaywall + PDF text extraction
 ├── cache.py                # JSON cache for papers, fulltexts, analyses
 ├── requirements.txt
-└── .env                    # OPENAI_API_KEY, UNPAYWALL_EMAIL
+└── .env                    # GROQ_API_KEY_1/2/3, UNPAYWALL_EMAIL, SEMANTIC_SCHOLAR_API_KEY
 ```
 
 ---
 
-## ✅ What Is Already Done 
+## ✅ What Is Already Done
 
 ### Core Pipeline
 - [x] User enters a claim → Semantic Scholar returns top N papers
 - [x] Papers sorted by relevance + citation count
-- [x] Each paper analyzed by GPT-4o using abstract (+ full text if cached)
+- [x] Each paper analyzed by LLM (Groq multi-model) using abstract (+ full text if cached)
 - [x] Verdict returned: SUPPORTS / CONTRADICTS / NEUTRAL + justification + confidence score
 - [x] Results displayed as cards in Streamlit with color-coded badges
 
@@ -48,6 +47,7 @@ project/
 - [x] Full text fetch (Unpaywall) removed from main pipeline — no longer blocks UX
 - [x] If full text is already in cache → used automatically in analysis
 - [x] JSON cache prevents redundant API calls across sessions
+- [x] Groq API key rotation (3 keys × 7 models) for rate limit resilience
 
 ### UI (Streamlit)
 - [x] Search bar + claim input
@@ -58,9 +58,9 @@ project/
 
 ---
 
-## 🚧 What Needs To Be Done
+## 🚧 What Needs To Be Done (Streamlit Phase)
 
-### Step 2 — Background Full Text Enrichment (Streamlit)
+### Step 2 — Background Full Text Enrichment
 **Goal**: After results are displayed, silently fetch PDFs in background threads.
 **Details**:
 - Launch a `threading.Thread(daemon=True)` after `st.write(results)`
@@ -86,10 +86,10 @@ project/
 
 ---
 
-### Step 4 — User Dashboard + Search History
+### Step 4 — User Dashboard + Search History (Streamlit)
 **Goal**: Personal dashboard showing past searches, saved papers, and trends.
 **Details**:
-- History stored in local JSON or SQLite (`history.db`)
+- History stored in local JSON (later migrated to MongoDB)
 - Dashboard page: list of past claims + verdicts + dates
 - Save/bookmark papers functionality
 - Tag papers manually (e.g. "relevant", "to read")
@@ -99,16 +99,16 @@ project/
 
 ---
 
-### Step 5 — Next.js Frontend (Full Rewrite / Separate Frontend)
-**Goal**: Replace Streamlit with a proper web UI in Next.js for a production-grade experience.
+## 🏗️ Target Architecture (Production)
+
+### Step 5 — FastAPI Backend
+**Goal**: Expose all current Python logic as REST API endpoints.
 **Details**:
+- Migrate `search.py`, `analyzer.py`, `fulltext.py` into FastAPI routers
+- Async endpoints using `httpx` + `asyncio`
+- Groq multi-model logic stays in `analyzer.py`
 
-#### Architecture
-- **Frontend**: Next.js 14+ (App Router), TailwindCSS, shadcn/ui
-- **Backend**: FastAPI (Python) — expose current logic as REST API endpoints
-- **Communication**: REST or tRPC
-
-#### API Endpoints to build (FastAPI)
+#### API Endpoints to build
 | Method | Route | Description |
 |--------|-------|-------------|
 | POST | `/search` | Search papers by claim |
@@ -118,7 +118,21 @@ project/
 | GET | `/history` | Get user search history |
 | POST | `/bookmark` | Save a paper |
 
-#### Next.js Pages to build
+---
+
+### Step 6 — Next.js Frontend
+**Goal**: Replace Streamlit with a production-grade web UI.
+
+#### Frontend Stack
+- **Next.js 14+** (App Router)
+- **TailwindCSS** — styling
+- **shadcn/ui** — composants UI (cards, badges, drawers, dialogs)
+- **Zustand** — state management
+- **TanStack Query** — fetching + client-side caching
+- **Framer Motion** — animations
+- **NextAuth.js** — auth (Google OAuth ou magic link)
+
+#### Pages to build
 | Route | Description |
 |-------|-------------|
 | `/` | Home — search bar, hero |
@@ -126,7 +140,7 @@ project/
 | `/paper/[id]` | Individual paper view + chat |
 | `/dashboard` | User history + saved papers |
 
-#### UI Components (shadcn/ui recommended)
+#### UI Components (shadcn/ui)
 - `ClaimSearchBar` — main input with autocomplete
 - `PaperCard` — title, authors, verdict badge, confidence bar
 - `VerdictBadge` — SUPPORTS / CONTRADICTS / NEUTRAL with colors
@@ -135,17 +149,78 @@ project/
 
 ---
 
+### Step 7 — Database & Cache (Production)
+**Goal**: Replace JSON file cache with production-grade persistence.
+
+| Actuel | Production |
+|--------|------------|
+| JSON cache fichier | **Redis** — cache rapide (analyses, fulltexts) |
+| Pas de DB | **MongoDB Atlas** + **Beanie** (ODM async) |
+
+MongoDB est choisi car les données sont naturellement orientées document :
+- Un papier = document JSON avec champs variables
+- Une analyse LLM = objet imbriqué (verdict + justification + score)
+- Historique utilisateur = liste de documents flexibles
+
+```python
+# Exemple modèle Beanie
+class SearchHistory(Document):
+    user_id: str
+    claim: str
+    results: list[PaperAnalysis]
+    created_at: datetime
+
+    class Settings:
+        name = "search_history"
+```
+
+---
+
+### Step 8 — Infra & Déploiement
+- **Docker + Docker Compose** — conteneurisation backend + Redis + MongoDB local
+- **Vercel** — déploiement frontend Next.js
+- **Railway ou Render** — déploiement backend FastAPI
+- **MongoDB Atlas** — free tier pour démarrer
+
+#### Architecture globale
+```
+[Next.js — Vercel]
+        ↕ REST (TanStack Query)
+[FastAPI — Railway]
+        ↕               ↕              ↕
+[Groq API]   [Semantic Scholar]   [Unpaywall]
+        ↕               ↕
+   [Redis]         [MongoDB Atlas]
+```
+
+---
+
 ## 🔑 Environment Variables Required
 ```
-OPENAI_API_KEY=sk-...
+# Groq (multi-model rotation)
+GROQ_API_KEY_1=gsk_...
+GROQ_API_KEY_2=gsk_...
+GROQ_API_KEY_3=gsk_...
+
+# APIs
 UNPAYWALL_EMAIL=your@email.com
 SEMANTIC_SCHOLAR_API_KEY=...   # optional but recommended
+
+# DB & Cache (production)
+MONGODB_URI=mongodb+srv://...
+REDIS_URL=redis://...
+
+# Auth (Next.js)
+NEXTAUTH_SECRET=...
+GOOGLE_CLIENT_ID=...
+GOOGLE_CLIENT_SECRET=...
 ```
 
 ---
 
 ## 🤝 Collaboration Notes
 - All LLM prompts are centralized in `analyzer.py` — modify prompts there only
+- Groq model rotation logic is in `analyzer.py` — do not hardcode model names elsewhere
 - Cache keys follow the pattern: `{paperId}_{claim_hash}` — do not change this format
 - When adding new API endpoints, document them in this file
 - UI language: French for labels/messages (target users are French-speaking researchers)
@@ -154,5 +229,5 @@ SEMANTIC_SCHOLAR_API_KEY=...   # optional but recommended
 ---
 
 ## 💡 Suggested Next Action
-Start with **Step 2** (background enrichment) — it's self-contained, low risk, and unlocks full text analysis
-for all subsequent sessions without any UX degradation.
+Start with **Step 2** (background enrichment) — self-contained, low risk, unlocks full text
+analysis for all subsequent sessions without any UX degradation.
