@@ -1,20 +1,26 @@
-# 🧠 CONTEXT — AI-Powered Scientific Research Assistant
+# 🧠 COLLABORATE — AI-Powered Scientific Research Assistant
 
 ## Project Overview
-This project is a **Streamlit-based web application** that helps researchers verify scientific claims against peer-reviewed literature.
-The user enters a claim (e.g. "Coffee reduces Alzheimer's risk"), the app fetches relevant papers from Semantic Scholar,
-analyzes each one with an LLM, and returns a structured verdict: SUPPORTS / CONTRADICTS / NEUTRAL.
+**Academic Evidence Finder** is a Streamlit web application that helps researchers
+verify scientific claims and explore academic literature using AI.
+
+Three core modes:
+- **Claim Verifier** — enter a claim → fetch papers → LLM verdict: SUPPORTED / CONTRADICTED / MIXED
+- **Literature Review** — enter a topic → generate a structured academic review from retrieved papers
+- **Paper Summarizer** — search a topic → get structured summaries of individual papers
 
 ---
 
 ## 🗂️ Current Stack
-- **Frontend**: Streamlit (Python)
-- **Backend logic**: Python modules
-- **LLM**: Multi-model via Groq API — 3 API keys rotation across 7 models
-- **Paper search**: Semantic Scholar API
-- **Full text retrieval**: Unpaywall API (PDF) + PyMuPDF (text extraction)
-- **Caching**: Local JSON-based cache (`cache.py`) — per paperId + per claim
-- **Deployment**: Local / Streamlit Cloud
+
+| Layer | Technology |
+|---|---|
+| Frontend | Streamlit (Python) |
+| LLM | Groq API — multi-model rotation (primary: `moonshotai/kimi-k2-instruct`) |
+| Paper search | Semantic Scholar API |
+| Full text | Unpaywall API + PyMuPDF — available in `scholar_client.py`, not in main pipeline yet |
+| Caching | Local JSON (`paper_cache.json`) via `cache_manager.py` |
+| Deployment | Local / Streamlit Cloud |
 
 ---
 
@@ -22,195 +28,148 @@ analyzes each one with an LLM, and returns a structured verdict: SUPPORTS / CONT
 
 ```
 project/
-│
-├── app.py                  # Main Streamlit app — UI + orchestration
-├── analyzer.py             # LLM analysis logic (prompts, Groq API calls)
-├── search.py               # Semantic Scholar API wrapper
-├── fulltext.py             # Unpaywall + PDF text extraction
-├── cache.py                # JSON cache for papers, fulltexts, analyses
-├── requirements.txt
-└── .env                    # GROQ_API_KEY_1/2/3, UNPAYWALL_EMAIL, SEMANTIC_SCHOLAR_API_KEY
+├── app.py              # Streamlit UI + orchestration (3 modes)
+├── analyzer.py         # All LLM logic: prompts, Groq calls, model rotation
+├── scholar_client.py   # Semantic Scholar API wrapper + Unpaywall integration
+├── cache_manager.py    # JSON cache — papers, analyses, summaries, fulltexts
+├── requirements.txt    # streamlit, openai, requests, python-dotenv
+├── .env                # API keys (see Environment Variables below)
+└── COLLABORATE.txt     # This file
 ```
 
 ---
 
-## ✅ What Is Already Done
+## ✅ What Is Done
 
 ### Core Pipeline
-- [x] User enters a claim → Semantic Scholar returns top N papers
-- [x] Papers sorted by relevance + citation count
-- [x] Each paper analyzed by LLM (Groq multi-model) using abstract (+ full text if cached)
-- [x] Verdict returned: SUPPORTS / CONTRADICTS / NEUTRAL + justification + confidence score
-- [x] Results displayed as cards in Streamlit with color-coded badges
+- [x] Claim → multi-query transform (3-5 Semantic Scholar queries via LLM)
+- [x] Papers fetched, deduplicated, sorted by citation count
+- [x] Relevance filter: `relevance_score >= 5` (papers below threshold excluded from verdict)
+- [x] Each paper analyzed by LLM → verdict + confidence + evidence + key_finding
+- [x] Overall verdict synthesized by LLM from all paper analyses
+- [x] Literature Review mode: structured 4-section academic review
+- [x] Paper Summarizer mode: 5-section structured summary per paper
 
-### Performance
-- [x] Full text fetch (Unpaywall) removed from main pipeline — no longer blocks UX
-- [x] If full text is already in cache → used automatically in analysis
-- [x] JSON cache prevents redundant API calls across sessions
-- [x] Groq API key rotation (3 keys × 7 models) for rate limit resilience
+### LLM / Analyzer
+- [x] Multi-model rotation across 6+ Groq models — automatic failover on 429
+- [x] Primary model: `moonshotai/kimi-k2-instruct`
+- [x] Fallback chain: `qwen/qwen3-32b` → `llama-3.3-70b-versatile` → `llama-4-scout` → `gpt-oss-120b` → `gpt-oss-20b`
+- [x] All prompts centralized in `analyzer.py` — V1 FINAL versions
+- [x] Population mismatch cap: cross-population evidence capped at PARTIALLY_SUPPORTS
+- [x] In vitro / animal model rule: mechanistic studies ≠ SUPPORTS for human claims
+- [x] Absence/no-effect rule: "no effect", "no association" → CONTRADICTS when population matches
+- [x] Query scoping: `_TOPIC_QUERIES` tightly scoped to prevent field drift
+- [x] Claim validation: vague/empty claims rejected before pipeline
 
-### UI (Streamlit)
-- [x] Search bar + claim input
-- [x] Paper cards with title, authors, year, venue, abstract snippet
-- [x] Verdict badge (color-coded)
-- [x] Confidence score display
-- [x] Sidebar with search status + paper count
+### Caching
+- [x] Search results cached per query string (MD5 key)
+- [x] LLM analyses cached per `paperId + claim_hash`
+- [x] Summaries cached per `paperId`
+- [x] Full text cached per `paperId` (for future use)
+- [x] `paper_cache.json` excluded from git via `.gitignore`
 
----
-
-## 🚧 What Needs To Be Done (Streamlit Phase)
-
-### Step 2 — Background Full Text Enrichment
-**Goal**: After results are displayed, silently fetch PDFs in background threads.
-**Details**:
-- Launch a `threading.Thread(daemon=True)` after `st.write(results)`
-- Thread calls `fulltext.fetch(pid, doi)` for each paper not yet in cache
-- Stores result via `cache.set_fulltext(pid, text)`
-- Sidebar shows `🔄 Enriching X papers in background...` badge
-- On next search for same claim → full texts are used automatically
-
-**Files to modify**: `app.py`, optionally `cache.py`
-
----
-
-### Step 3 — Individual Paper Page + Contextual Chat
-**Goal**: Click on a paper → open a dedicated view with full text + ask questions about it.
-**Details**:
-- Use `st.dialog()` or `st.session_state` page routing
-- New prompt in `analyzer.py`: `PAPER_CHAT_PROMPT` — answers questions grounded in the paper
-- Chat input: "What methodology did they use?", "What are the limitations?"
-- Full text shown in expandable section
-- Citation export button (BibTeX / APA)
-
-**Files to modify**: `app.py`, `analyzer.py`
+### UI (Streamlit — current state)
+- [x] 3-tab layout: Claim Verifier / Literature Review / Paper Summarizer
+- [x] Color-coded verdict badges (green / yellow / red / grey)
+- [x] Paper cards: title, authors, year, citations, evidence, explanation, key finding
+- [x] Overall verdict banner with supporting / contradicting / neutral counts
+- [x] Sidebar: model in use, cache stats, search parameters
+- [x] Max papers slider, year filter
 
 ---
 
-### Step 4 — User Dashboard + Search History (Streamlit)
-**Goal**: Personal dashboard showing past searches, saved papers, and trends.
-**Details**:
-- History stored in local JSON (later migrated to MongoDB)
-- Dashboard page: list of past claims + verdicts + dates
-- Save/bookmark papers functionality
-- Tag papers manually (e.g. "relevant", "to read")
-- Simple stats: nb of searches, most cited papers found, verdict distribution chart
+## 🚧 Next Step — Streamlit UI/UX Polish (v1 public release)
 
-**Files to modify**: `app.py`, new `history.py` module
+**Goal**: ship a clean, professional Streamlit UI before migrating to Next.js.
+
+### What needs improvement
+- [ ] Visual hierarchy — overall verdict should be more prominent
+- [ ] Typography and spacing — currently too dense
+- [ ] Mobile / narrow viewport readability
+- [ ] Loading states — clearer progress indication during analysis
+- [ ] Empty states — better messaging when no papers found
+- [ ] Sidebar — cleaner layout, less clutter
+
+**Files to modify**: `app.py` only (CSS + layout restructuring).
 
 ---
 
 ## 🏗️ Target Architecture (Production)
 
-### Step 5 — FastAPI Backend
-**Goal**: Expose all current Python logic as REST API endpoints.
-**Details**:
-- Migrate `search.py`, `analyzer.py`, `fulltext.py` into FastAPI routers
-- Async endpoints using `httpx` + `asyncio`
-- Groq multi-model logic stays in `analyzer.py`
+### Step 2 — FastAPI Backend
+**Goal**: expose all Python logic as REST API endpoints.
 
-#### API Endpoints to build
 | Method | Route | Description |
-|--------|-------|-------------|
-| POST | `/search` | Search papers by claim |
-| GET | `/paper/{id}` | Get paper details + full text |
-| POST | `/analyze` | Analyze a paper against a claim |
-| POST | `/chat` | Chat about a specific paper |
-| GET | `/history` | Get user search history |
-| POST | `/bookmark` | Save a paper |
+|---|---|---|
+| POST | `/verify` | Full claim verification pipeline |
+| POST | `/review` | Literature review generation |
+| POST | `/summarize` | Paper summarization |
+| GET | `/paper/{id}` | Paper details |
 
----
+- Migrate `scholar_client.py`, `analyzer.py` into FastAPI routers
+- Async with `httpx` + `asyncio`
+- All prompts stay in `analyzer.py`
 
-### Step 6 — Next.js Frontend
-**Goal**: Replace Streamlit with a production-grade web UI.
+### Step 3 — Next.js Frontend
+**Goal**: replace Streamlit with a production-grade web UI.
 
-#### Frontend Stack
-- **Next.js 14+** (App Router)
-- **TailwindCSS** — styling
-- **shadcn/ui** — composants UI (cards, badges, drawers, dialogs)
-- **Zustand** — state management
-- **TanStack Query** — fetching + client-side caching
-- **Framer Motion** — animations
-- **NextAuth.js** — auth (Google OAuth ou magic link)
+| Technology | Role |
+|---|---|
+| Next.js 14+ (App Router) | Framework |
+| TailwindCSS | Styling |
+| shadcn/ui | UI components (cards, badges, dialogs) |
+| Zustand | State management |
+| TanStack Query | Fetching + client-side cache |
+| Framer Motion | Animations |
+| NextAuth.js | Auth (Google OAuth / magic link) |
 
-#### Pages to build
-| Route | Description |
-|-------|-------------|
-| `/` | Home — search bar, hero |
-| `/results` | Results page — paper cards + verdicts |
-| `/paper/[id]` | Individual paper view + chat |
-| `/dashboard` | User history + saved papers |
+**Pages**:
+- `/` — home, search bar, hero
+- `/results` — paper cards + verdict
+- `/paper/[id]` — individual paper view
+- `/dashboard` — search history + saved papers
 
-#### UI Components (shadcn/ui)
-- `ClaimSearchBar` — main input with autocomplete
-- `PaperCard` — title, authors, verdict badge, confidence bar
-- `VerdictBadge` — SUPPORTS / CONTRADICTS / NEUTRAL with colors
-- `PaperChatDrawer` — side panel with chat interface
-- `HistoryTimeline` — dashboard list of past searches
+### Step 4 — Database & Cache (Production)
 
----
+| Current | Production |
+|---|---|
+| JSON file cache | **Redis** — fast analysis cache |
+| No DB | **MongoDB Atlas** + Beanie (ODM async) |
 
-### Step 7 — Database & Cache (Production)
-**Goal**: Replace JSON file cache with production-grade persistence.
+### Step 5 — Infra
 
-| Actuel | Production |
-|--------|------------|
-| JSON cache fichier | **Redis** — cache rapide (analyses, fulltexts) |
-| Pas de DB | **MongoDB Atlas** + **Beanie** (ODM async) |
-
-MongoDB est choisi car les données sont naturellement orientées document :
-- Un papier = document JSON avec champs variables
-- Une analyse LLM = objet imbriqué (verdict + justification + score)
-- Historique utilisateur = liste de documents flexibles
-
-```python
-# Exemple modèle Beanie
-class SearchHistory(Document):
-    user_id: str
-    claim: str
-    results: list[PaperAnalysis]
-    created_at: datetime
-
-    class Settings:
-        name = "search_history"
-```
-
----
-
-### Step 8 — Infra & Déploiement
-- **Docker + Docker Compose** — conteneurisation backend + Redis + MongoDB local
-- **Vercel** — déploiement frontend Next.js
-- **Railway ou Render** — déploiement backend FastAPI
-- **MongoDB Atlas** — free tier pour démarrer
-
-#### Architecture globale
 ```
 [Next.js — Vercel]
-        ↕ REST (TanStack Query)
+       ↕ REST
 [FastAPI — Railway]
-        ↕               ↕              ↕
-[Groq API]   [Semantic Scholar]   [Unpaywall]
-        ↕               ↕
-   [Redis]         [MongoDB Atlas]
+       ↕           ↕            ↕
+[Groq API]  [Semantic Scholar]  [Unpaywall]
+       ↕           ↕
+   [Redis]    [MongoDB Atlas]
 ```
+
+- Docker + Docker Compose for local dev
+- Vercel → Next.js frontend
+- Railway or Render → FastAPI backend
+- MongoDB Atlas free tier to start
 
 ---
 
-## 🔑 Environment Variables Required
-```
-# Groq (multi-model rotation)
-GROQ_API_KEY_1=gsk_...
-GROQ_API_KEY_2=gsk_...
-GROQ_API_KEY_3=gsk_...
+## 🔑 Environment Variables
 
-# APIs
-UNPAYWALL_EMAIL=your@email.com
-SEMANTIC_SCHOLAR_API_KEY=...   # optional but recommended
+```bash
+# LLM (Groq — multi-key rotation)
+LLM_PROVIDER=groq
+LLM_API_KEY=gsk_...
+LLM_API_KEY_2=gsk_...
+LLM_API_KEY_3=gsk_...
 
-# DB & Cache (production)
+# Paper search
+SEMANTIC_SCHOLAR_API_KEY=...   # optional but increases rate limits
+
+# Production only
 MONGODB_URI=mongodb+srv://...
 REDIS_URL=redis://...
-
-# Auth (Next.js)
 NEXTAUTH_SECRET=...
 GOOGLE_CLIENT_ID=...
 GOOGLE_CLIENT_SECRET=...
@@ -218,16 +177,12 @@ GOOGLE_CLIENT_SECRET=...
 
 ---
 
-## 🤝 Collaboration Notes
-- All LLM prompts are centralized in `analyzer.py` — modify prompts there only
-- Groq model rotation logic is in `analyzer.py` — do not hardcode model names elsewhere
-- Cache keys follow the pattern: `{paperId}_{claim_hash}` — do not change this format
-- When adding new API endpoints, document them in this file
-- UI language: French for labels/messages (target users are French-speaking researchers)
-- Code language: English (variables, functions, comments)
+## 🤝 Collaboration Rules
 
----
-
-## 💡 Suggested Next Action
-Start with **Step 2** (background enrichment) — self-contained, low risk, unlocks full text
-analysis for all subsequent sessions without any UX degradation.
+- **All LLM prompts in `analyzer.py` only** — never duplicate or inline prompts elsewhere
+- **Model rotation in `analyzer.py` only** — never hardcode model names in `app.py`
+- **Cache keys**: `{paperId}_{claim_hash}` pattern — do not change
+- **UI language**: French for all user-facing labels and messages
+- **Code language**: English (variables, functions, comments, docstrings)
+- **Relevance threshold**: `>= 5` — do not lower without testing
+- **`paper_cache.json`** is gitignored — never commit it
