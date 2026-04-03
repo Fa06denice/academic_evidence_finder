@@ -14,7 +14,7 @@ st.set_page_config(
     page_title="Academic Evidence Finder",
     page_icon="🔬",
     layout="wide",
-    initial_sidebar_state="expanded",
+    initial_sidebar_state="expanded",  # toujours ouverte
 )
 
 st.markdown("""
@@ -40,29 +40,12 @@ header[data-testid="stHeader"] {
     border: none !important;
 }
 
+/* Bouton collapse sidebar masqué — sidebar toujours ouverte */
 [data-testid="stSidebarCollapsedControl"],
 [data-testid="stSidebarCollapsedControl"] button,
 button[data-testid="stBaseButton-headerNoPadding"],
 button[data-testid="stBaseButton-header"] {
-    display: flex !important;
-    visibility: visible !important;
-    opacity: 1 !important;
-    background: #6366f1 !important;
-    color: #ffffff !important;
-    border-radius: 0 8px 8px 0 !important;
-    min-width: 28px !important;
-    min-height: 40px !important;
-    z-index: 99999 !important;
-    border: none !important;
-    position: fixed !important;
-    left: 0 !important;
-    top: 0.75rem !important;
-    transform: none !important;
-}
-button[data-testid="stBaseButton-headerNoPadding"] svg,
-button[data-testid="stBaseButton-header"] svg {
-    stroke: #ffffff !important;
-    fill: #ffffff !important;
+    display: none !important;
 }
 
 /* ═══════════════════════════════════════════════
@@ -811,29 +794,6 @@ def main():
 
     max_papers, year_filter, model_ph = render_sidebar(cache, model_ph)
 
-    # JS sidebar auto-open — une seule fois par session
-    if not st.session_state.get("_sidebar_js_done"):
-        st.session_state["_sidebar_js_done"] = True
-        components.html("""
-<script>
-(function() {
-    function tryOpen() {
-        var doc = window.parent.document;
-        var selectors = [
-            '[data-testid="stSidebarCollapsedControl"] button',
-            'button[data-testid="stBaseButton-headerNoPadding"]',
-            'button[data-testid="stBaseButton-header"]'
-        ];
-        for (var i = 0; i < selectors.length; i++) {
-            var btn = doc.querySelector(selectors[i]);
-            if (btn) { btn.click(); return; }
-        }
-        setTimeout(tryOpen, 300);
-    }
-    setTimeout(tryOpen, 500);
-})();
-</script>
-""", height=0)
 
     st.markdown(
         '<h1 style="font-size:1.7rem;font-weight:700;color:#f1f0ee;margin-bottom:4px;">'
