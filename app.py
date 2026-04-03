@@ -1,20 +1,12 @@
-# app.py
-import json
 import os
+import time
 import streamlit as st
 from dotenv import load_dotenv
-
-
 from scholar_client import SemanticScholarClient
 from analyzer import PaperAnalyzer
 from cache_manager import CacheManager
 
-
 load_dotenv()
-
-
-# ── Page config ───────────────────────────────────────────────────────────────
-
 
 st.set_page_config(
     page_title="Academic Evidence Finder",
@@ -23,49 +15,87 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
-
+# ══════════════════════════════════════════════════════════════════════════════
+#  CSS
+# ══════════════════════════════════════════════════════════════════════════════
 st.markdown("""
 <style>
-  .verdict-supported    { background:#1a3a2a; border-left:4px solid #28a745; padding:12px 16px; border-radius:6px; margin:10px 0; color:#e8f5e9; }
-  .verdict-partial      { background:#2a2a1a; border-left:4px solid #ffc107; padding:12px 16px; border-radius:6px; margin:10px 0; color:#fff8e1; }
-  .verdict-contradicted { background:#3a1a1a; border-left:4px solid #dc3545; padding:12px 16px; border-radius:6px; margin:10px 0; color:#fce4ec; }
-  .verdict-neutral      { background:#1e1e1e; border-left:4px solid #6c757d; padding:12px 16px; border-radius:6px; margin:10px 0; color:#e0e0e0; }
-  .evidence-quote       { font-style:italic; border-left:3px solid #4a9eff; padding-left:12px; color:#b0c4de; margin:8px 0; }
-  .paper-meta           { color:#aaa; font-size:0.9em; }
+  /* ── Verdict badges ── */
+  .vbadge {
+    display: inline-block;
+    padding: 4px 14px;
+    border-radius: 8px;
+    font-weight: 700;
+    font-size: 0.88em;
+    letter-spacing: 0.02em;
+  }
+  .v-supported    { background:#1a4731; color:#6fcf97; }
+  .v-partial      { background:#4a3800; color:#f2c94c; }
+  .v-contradicted { background:#4a1020; color:#eb5757; }
+  .v-neutral      { background:#2d2d2d; color:#bdbdbd; }
+
+  /* ── Overall verdict banner ── */
+  .overall-banner {
+    padding: 18px 22px;
+    border-radius: 12px;
+    margin: 14px 0;
+    border-left: 5px solid;
+  }
+  .ob-supported    { background:#0d2b1d; border-color:#6fcf97; color:#e0f5eb; }
+  .ob-partial      { background:#2a2000; border-color:#f2c94c; color:#fdf3d0; }
+  .ob-contradicted { background:#2a0810; border-color:#eb5757; color:#fde0e0; }
+  .ob-neutral      { background:#1e1e1e; border-color:#bdbdbd; color:#e0e0e0; }
+
+  /* ── Metric pills ── */
+  .mpill {
+    display: inline-block;
+    background: #2a2a2a;
+    color: #e0e0e0;
+    padding: 3px 10px;
+    border-radius: 12px;
+    font-size: 0.82em;
+    margin-right: 6px;
+  }
+
+  /* ── Mode tabs custom ── */
+  div[data-testid="stRadio"] > label {
+    font-size: 0.95em;
+  }
+
+  /* ── Model indicator ── */
+  .model-tag {
+    background: #1a1a2e;
+    color: #a78bfa;
+    border: 1px solid #3d2e6e;
+    border-radius: 8px;
+    padding: 6px 12px;
+    font-size: 0.8em;
+    font-family: monospace;
+    margin-top: 8px;
+    display: block;
+  }
 </style>
 """, unsafe_allow_html=True)
 
-
-# ── Constants ─────────────────────────────────────────────────────────────────
-
-
+# ══════════════════════════════════════════════════════════════════════════════
+#  CONSTANTS
+# ══════════════════════════════════════════════════════════════════════════════
 VERDICT_ICON = {
-    "SUPPORTS":           "🟢",
-    "PARTIALLY_SUPPORTS": "🟡",
-    "CONTRADICTS":        "🔴",
-    "NEUTRAL":            "⚪",
-    "INSUFFICIENT_DATA":  "⚫",
+    "SUPPORTS": "🟢", "PARTIALLY_SUPPORTS": "🟡",
+    "CONTRADICTS": "🔴", "NEUTRAL": "⚪", "INSUFFICIENT_DATA": "⚫",
 }
-
-
 VERDICT_CSS = {
-    "SUPPORTS":           "verdict-supported",
-    "PARTIALLY_SUPPORTS": "verdict-partial",
-    "CONTRADICTS":        "verdict-contradicted",
-    "NEUTRAL":            "verdict-neutral",
-    "INSUFFICIENT_DATA":  "verdict-neutral",
+    "SUPPORTS": "v-supported", "PARTIALLY_SUPPORTS": "v-partial",
+    "CONTRADICTS": "v-contradicted", "NEUTRAL": "v-neutral",
+    "INSUFFICIENT_DATA": "v-neutral",
 }
-
-
 OVERALL_CSS = {
-    "SUPPORTED":             "verdict-supported",
-    "PARTIALLY_SUPPORTED":   "verdict-partial",
-    "CONTRADICTED":          "verdict-contradicted",
-    "MIXED":                 "verdict-partial",
-    "INSUFFICIENT_EVIDENCE": "verdict-neutral",
+    "SUPPORTED": ("v-supported", "ob-supported"),
+    "PARTIALLY_SUPPORTED": ("v-partial", "ob-partial"),
+    "CONTRADICTED": ("v-contradicted", "ob-contradicted"),
+    "MIXED": ("v-partial", "ob-partial"),
+    "INSUFFICIENT_EVIDENCE": ("v-neutral", "ob-neutral"),
 }
-
-
 OVERALL_LABEL = {
     "SUPPORTED":             "✅ SUPPORTED BY LITERATURE",
     "PARTIALLY_SUPPORTED":   "⚠️ PARTIALLY SUPPORTED",
@@ -73,512 +103,493 @@ OVERALL_LABEL = {
     "MIXED":                 "🔀 MIXED EVIDENCE",
     "INSUFFICIENT_EVIDENCE": "❓ INSUFFICIENT EVIDENCE",
 }
-
-
 PAPER_VERDICT_LABEL = {
-    "SUPPORTS":           "✅ Supports the claim",
-    "PARTIALLY_SUPPORTS": "⚠️ Partially supports",
-    "CONTRADICTS":        "❌ Contradicts the claim",
-    "NEUTRAL":            "➖ Neutral",
-    "INSUFFICIENT_DATA":  "❓ Insufficient data",
+    "SUPPORTS":          "✅ Supports the claim",
+    "PARTIALLY_SUPPORTS":"⚠️ Partially supports",
+    "CONTRADICTS":       "❌ Contradicts the claim",
+    "NEUTRAL":           "➖ Neutral",
+    "INSUFFICIENT_DATA": "❓ Insufficient data",
 }
 
-
-# ── Helpers ───────────────────────────────────────────────────────────────────
-
-
-def _get_llm_api_key() -> str:
-    provider = os.getenv("LLM_PROVIDER", "groq").lower()
-    if provider == "openai":
-        return os.getenv("OPENAI_API_KEY", "") or os.getenv("LLM_API_KEY", "")
-    return os.getenv("LLM_API_KEY", "")
-
-
-def _get_extra_keys() -> list:
-    return [
-        os.getenv(f"LLM_API_KEY_{i}", "")
-        for i in range(2, 10)
-        if os.getenv(f"LLM_API_KEY_{i}", "")
-    ]
-
-
+# ══════════════════════════════════════════════════════════════════════════════
+#  CLIENTS
+# ══════════════════════════════════════════════════════════════════════════════
+@st.cache_resource
 def get_clients():
     provider   = os.getenv("LLM_PROVIDER", "groq").lower()
-    api_key    = _get_llm_api_key()
+    api_key    = os.getenv("LLM_API_KEY", "")
     ss_key     = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
-    extra_keys = _get_extra_keys()
-
+    extra_keys = [os.getenv("LLM_API_KEY_" + str(i), "")
+                  for i in range(2, 10) if os.getenv("LLM_API_KEY_" + str(i), "")]
     if not api_key and provider != "ollama":
         return None, None, None
-
-    cache    = CacheManager()
-    scholar  = SemanticScholarClient(api_key=ss_key or None)
-    analyzer = PaperAnalyzer(
-        api_key=api_key,
-        provider=provider,
-        extra_keys=extra_keys,
+    return (
+        SemanticScholarClient(api_key=ss_key or None),
+        PaperAnalyzer(api_key=api_key, provider=provider, extra_keys=extra_keys),
+        CacheManager(),
     )
-    return scholar, analyzer, cache
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  SIDEBAR
+# ══════════════════════════════════════════════════════════════════════════════
+def render_sidebar(cache: CacheManager, model_ph):
+    with st.sidebar:
+        st.markdown("## 🔬 Academic Evidence Finder")
+        st.markdown("---")
 
-def render_paper_card(paper: dict, analysis: dict, idx: int, expanded: bool = False):
+        st.markdown("### ⚙️ Settings")
+        max_papers  = st.slider("Max papers to analyse", 3, 15, 7)
+        year_filter = st.text_input("Year filter (e.g. 2018-2024)", "")
+
+        st.markdown("---")
+        st.markdown("### 🤖 Active model")
+        model_ph = st.empty()
+        _refresh_sidebar(cache, model_ph)
+
+        st.markdown("---")
+        if st.button("🗑️ Clear cache", use_container_width=True):
+            cache.clear()
+            st.success("Cache cleared!")
+            st.rerun()
+
+    return max_papers, year_filter, model_ph
+
+def _refresh_sidebar(cache: CacheManager, model_ph):
+    stats = cache.stats()
+    current = st.session_state.get("current_model", "—")
+    model_ph.markdown(
+        '<span class="model-tag">⚡ ' + current + '</span>'
+        '<br><small style="color:#888">📦 '
+        + str(stats.get("searches", 0)) + ' searches &nbsp;|&nbsp; '
+        + str(stats.get("analyses", 0)) + ' analyses in cache</small>',
+        unsafe_allow_html=True,
+    )
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  PAPER CARD
+# ══════════════════════════════════════════════════════════════════════════════
+def render_paper_card(paper: dict, analysis: dict, idx: int, analyzer: PaperAnalyzer, expanded: bool = False):
     title    = paper.get("title", "Unknown Title")
     year     = paper.get("year", "N/A")
     authors  = [a.get("name", "") for a in paper.get("authors", [])[:4]]
     author_s = ", ".join(a for a in authors if a)
     if len(paper.get("authors", [])) > 4:
         author_s += " et al."
-    cites    = paper.get("citationCount")
-    verdict  = analysis.get("verdict", "INSUFFICIENT_DATA")
-    icon     = VERDICT_ICON.get(verdict, "⚫")
-    css      = VERDICT_CSS.get(verdict, "verdict-neutral")
-    label    = PAPER_VERDICT_LABEL.get(verdict, verdict)
-    score    = int(analysis.get("relevance_score") or 0)
-    conf     = analysis.get("confidence", "LOW")
-    evidence = analysis.get("evidence", "No evidence found.")
-    explain  = analysis.get("explanation", "")
-    finding  = analysis.get("key_finding", "")
-    pid      = paper.get("paperId", "")
-    doi      = (paper.get("externalIds") or {}).get("DOI", "")
 
-    with st.expander(f"{icon} [{idx + 1}] {title} ({year})", expanded=expanded):
-        col1, col2, col3 = st.columns([3, 1, 1])
-        with col1:
-            st.markdown(f'<span class="paper-meta">👤 {author_s or "Unknown"}</span>', unsafe_allow_html=True)
-        with col2:
+    cites   = paper.get("citationCount")
+    verdict = analysis.get("verdict", "INSUFFICIENT_DATA")
+    icon    = VERDICT_ICON.get(verdict, "⚫")
+    css     = VERDICT_CSS.get(verdict, "v-neutral")
+    label   = PAPER_VERDICT_LABEL.get(verdict, verdict)
+    score   = int(analysis.get("relevance_score") or 0)
+    conf    = analysis.get("confidence", "LOW")
+    evidence    = analysis.get("evidence",    "No evidence found.")
+    explain     = analysis.get("explanation", "")
+    finding     = analysis.get("key_finding", "")
+    doi         = (paper.get("externalIds") or {}).get("DOI", "")
+    url         = paper.get("url") or ("https://doi.org/" + doi if doi else "")
+    abstract    = (paper.get("abstract") or "").strip()
+
+    with st.expander(icon + " [" + str(idx + 1) + "] " + title + " (" + str(year) + ")", expanded=expanded):
+        c1, c2, c3 = st.columns([3, 1, 1])
+        with c1:
+            st.markdown('<span class="vbadge ' + css + '">' + label + '</span>', unsafe_allow_html=True)
+        with c2:
             if cites is not None:
-                st.markdown(f'<span class="paper-meta">📎 {int(cites):,} citations</span>', unsafe_allow_html=True)
-        with col3:
-            st.markdown(f'<span class="paper-meta">⭐ Relevance: {score}/10</span>', unsafe_allow_html=True)
+                st.markdown('<span class="mpill">📚 ' + str(cites) + ' citations</span>', unsafe_allow_html=True)
+        with c3:
+            st.markdown('<span class="mpill">🎯 ' + str(score) + '/10</span>', unsafe_allow_html=True)
 
-        st.markdown(
-            f'<div class="{css}"><strong>{label}</strong>&nbsp;&nbsp;<small>(Confidence: {conf})</small></div>',
-            unsafe_allow_html=True,
-        )
+        meta = "👤 " + (author_s or "Unknown")
+        if url:
+            meta += " &nbsp;|&nbsp; 🔗 [DOI / Link](" + url + ")"
+        st.caption(meta)
 
-        st.markdown("**📌 Evidence from abstract:**")
-        st.markdown(f'<div class="evidence-quote">"{evidence}"</div>', unsafe_allow_html=True)
+        if evidence and evidence not in ("No evidence found.", "Analysis could not be completed."):
+            st.markdown("**📌 Evidence**")
+            st.info(evidence)
 
         if explain:
-            st.markdown(f"**🔍 Analysis:** {explain}")
-        if finding and finding != "N/A":
-            st.markdown(f"**💡 Key finding:** {finding}")
+            st.markdown("**🧠 Explanation**")
+            st.write(explain)
 
-        with st.expander("📄 Full abstract"):
-            st.markdown(paper.get("abstract") or "*No abstract available.*")
+        if finding and finding not in ("N/A", ""):
+            st.markdown("**🔑 Key Finding**")
+            st.success(finding)
 
-        links = []
-        if pid:
-            links.append(f"[🔗 Semantic Scholar](https://www.semanticscholar.org/paper/{pid})")
-        if doi:
-            links.append(f"[📄 DOI](https://doi.org/{doi})")
-        if links:
-            st.markdown("  |  ".join(links))
+        st.caption("Confidence: **" + conf + "**")
 
+        if abstract:
+            with st.expander("📄 Abstract"):
+                st.write(abstract)
 
-def _render_overall_verdict(overall: dict):
-    """Render the overall verdict block — reusable for both normal and early-exit cases."""
-    ov     = overall.get("overall_verdict", "INSUFFICIENT_EVIDENCE")
-    ov_css = OVERALL_CSS.get(ov, "verdict-neutral")
-    ov_lbl = OVERALL_LABEL.get(ov, ov)
-    st.markdown(
-        f'<div class="{ov_css}">'
-        f'<h3 style="margin:0">{ov_lbl}</h3>'
-        f'<p style="margin:8px 0 4px 0">{overall.get("verdict_explanation", "")}</p>'
-        f'<small>🟢 Supporting: {overall.get("supporting_count", 0)} &nbsp;|&nbsp; '
-        f'🔴 Contradicting: {overall.get("contradicting_count", 0)} &nbsp;|&nbsp; '
-        f'⚪ Neutral/Unclear: {overall.get("neutral_count", 0)}</small>'
-        f'</div>',
-        unsafe_allow_html=True,
-    )
+        # Per-paper summarizer
+        skey = "sum_" + str(idx)
+        if st.button("🔍 Summarize this paper", key="sbtn_" + str(idx)):
+            with st.spinner("Summarizing…"):
+                st.session_state[skey] = analyzer.summarize(paper)
+        if skey in st.session_state:
+            st.markdown(st.session_state[skey])
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  FETCH + DEDUP
+# ══════════════════════════════════════════════════════════════════════════════
+def fetch_papers(queries, scholar, cache, max_papers, year_filter, status_ph):
+    seen   = set()
+    papers = []
+    for q in queries:
+        cached = cache.get_search(q)
+        if cached:
+            batch = cached
+        else:
+            status_ph.info("📡 Searching: *" + q + "*")
+            batch = scholar.search(q, limit=max_papers, year=year_filter or None)
+            if batch:
+                cache.set_search(q, batch)
+        for p in batch:
+            pid = p.get("paperId", "")
+            if pid and pid not in seen:
+                seen.add(pid)
+                papers.append(p)
+    papers = sorted(papers, key=lambda p: p.get("citationCount") or 0, reverse=True)
+    return papers[:max_papers]
 
-# ── Search & analysis pipeline ────────────────────────────────────────────────
-
-
-def run_search(
-    claim: str,
-    scholar: SemanticScholarClient,
-    analyzer: PaperAnalyzer,
-    cache: CacheManager,
-    year_str: str = None,
-) -> tuple:
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODE 1 — CLAIM VERIFIER
+# ══════════════════════════════════════════════════════════════════════════════
+def run_claim_verifier(claim, scholar, analyzer, cache, max_papers, year_filter, model_ph):
     status = st.empty()
 
-    # Step 1 — transform query
-    status.info("🔄 Generating academic search queries…")
-    queries = analyzer.transform_query(claim)
-    st.sidebar.markdown("---\n**🔍 Queries sent to Semantic Scholar:**")
-    for q in queries:
-        st.sidebar.markdown(f"- `{q}`")
+    # Validate
+    early = analyzer.validate_claim(claim)
+    if early:
+        ov_key = early.get("overall_verdict", "INSUFFICIENT_EVIDENCE")
+        badge_css, banner_css = OVERALL_CSS.get(ov_key, ("v-neutral", "ob-neutral"))
+        lbl = OVERALL_LABEL.get(ov_key, ov_key)
+        st.markdown('<div class="overall-banner ' + banner_css + '">'
+                    '<span class="vbadge ' + badge_css + '" style="font-size:1.1em;">' + lbl + '</span>'
+                    '<p style="margin:10px 0 0 0;">' + early.get("verdict_explanation", "") + '</p>'
+                    '</div>', unsafe_allow_html=True)
+        return
 
-    # Step 2 — search (with cache)
-    all_papers: dict = {}
-    for i, q in enumerate(queries):
-        status.info(f"🔍 Searching ({i + 1}/{len(queries)}): *{q}*…")
-        cached = cache.get_search(q)
-        if cached is not None:
-            papers = cached
-            st.sidebar.markdown("  ✅ Cache hit")
-        else:
-            papers = scholar.search(q, limit=10, year=year_str)
-            cache.set_search(q, papers)
-        for p in papers:
-            pid = p.get("paperId")
-            if pid and pid not in all_papers:
-                if cache.get_paper(pid) is None:
-                    cache.set_paper(pid, p)
-                else:
-                    cached_paper = cache.get_paper(pid)
-                    for field in ("abstract", "tldr", "authors", "citationCount", "externalIds"):
-                        if not p.get(field) and cached_paper.get(field):
-                            p[field] = cached_paper[field]
-                all_papers[pid] = p
+    # Query transform
+    status.info("🔄 Transforming query…")
+    queries = analyzer.transform_query(claim, max_papers=max_papers)
+    st.session_state["current_model"] = analyzer.current_model
+    _refresh_sidebar(cache, model_ph)
+    st.caption("🔍 Search queries: " + " | ".join(queries))
 
-    if not all_papers:
-        status.empty()
-        return [], {}
+    # Fetch
+    papers = fetch_papers(queries, scholar, cache, max_papers, year_filter, status)
+    if not papers:
+        status.error("No papers found. Try rephrasing your claim.")
+        return
 
-    # Sort by citation count and cap at 20
-    sorted_papers = sorted(
-        all_papers.values(),
-        key=lambda p: int(p.get("citationCount") or 0),
-        reverse=True,
-    )[:20]
+    status.info("📄 " + str(len(papers)) + " papers found — analysing…")
 
-    # Step 3 — full texts fetched in background (non-bloquant)
-    # Le pipeline principal utilise uniquement les abstracts
-    # Les full texts arrivent en cache silencieusement pour les prochaines requêtes
-    fulltext_map: dict = {}
-    for p in sorted_papers:
-        pid = p.get("paperId", "")
-        cached_ft = cache.get_fulltext(pid)
-        if cached_ft:
-            fulltext_map[pid] = cached_ft  # déjà en cache → utilisé immédiatement
-
-    # Step 4 — analyse each paper
+    # Analyse
     results = []
-    for i, paper in enumerate(sorted_papers):
+    prog    = st.progress(0)
+    for i, paper in enumerate(papers):
         pid   = paper.get("paperId", "")
-        title = paper.get("title", "Unknown")[:65]
-        status.info(f"🧠 Analysing paper {i + 1}/{len(sorted_papers)}: *{title}…*")
-
-        cached_analysis = cache.get_analysis(pid, claim)
-        if cached_analysis is not None:
-            results.append((paper, cached_analysis))
+        title = (paper.get("title") or "")[:60]
+        status.info("🧠 Analysing " + str(i+1) + "/" + str(len(papers)) + ": *" + title + "…*")
+        cached_a = cache.get_analysis(pid, claim)
+        if cached_a is not None:
+            analysis = cached_a
         else:
-            fulltext = fulltext_map.get(pid)
-            analysis = analyzer.analyze_paper(paper, claim, fulltext=fulltext)
+            analysis = analyzer.analyze_paper(paper, claim)
             cache.set_analysis(pid, claim, analysis)
-            results.append((paper, analysis))
+        results.append((paper, analysis))
+        st.session_state["current_model"] = analyzer.current_model
+        _refresh_sidebar(cache, model_ph)
+        prog.progress((i + 1) / len(papers))
 
-    # Filter irrelevant
-    relevant = [(p, a) for p, a in results if int(a.get("relevance_score") or 0) >= 3]
-    if not relevant:
-        relevant = results
-    relevant.sort(key=lambda x: int(x[1].get("relevance_score") or 0), reverse=True)
-
-    # Step 5 — overall verdict
-    status.info("📊 Computing overall verdict…")
-    overall = analyzer.overall_verdict(claim, relevant)
-    status.empty()
-    return relevant, overall
-
-# ── Sidebar ───────────────────────────────────────────────────────────────────
-
-
-with st.sidebar:
-    st.title("⚙️ Configuration")
-
-    provider   = os.getenv("LLM_PROVIDER", "groq").lower()
-    _api_key   = _get_llm_api_key()
-    _ss_key    = os.getenv("SEMANTIC_SCHOLAR_API_KEY", "")
-    _extra     = _get_extra_keys()
-    _model     = os.getenv("LLM_MODEL", "")
-
-    _provider_labels = {
-        "groq":   "🟢 Groq (gratuit)",
-        "openai": "🔵 OpenAI (payant)",
-        "gemini": "🟡 Google Gemini (gratuit)",
-        "ollama": "🟣 Ollama (local)",
-    }
-
-    st.markdown("**🔑 API Keys**")
-    st.markdown(f"LLM : {_provider_labels.get(provider, provider)}&nbsp;&nbsp;{'✅' if _api_key else '❌'}")
-    st.markdown(f"Semantic Scholar : {'✅ Actif' if _ss_key else '⚠️ Non configuré (optionnel)'}")
-
-    total_keys = 1 + len(_extra) if _api_key else len(_extra)
-    if provider == "groq":
-        from analyzer import ModelRotator
-        total_models = total_keys * len(ModelRotator.GROQ_FALLBACKS)
-        st.markdown(f"🔄 Pool : **{total_keys} clé(s)** · **{total_models} modèles** en rotation")
-    if _model:
-        st.markdown(f"🤖 Modèle primaire : `{_model}`")
-
-    if not _api_key and provider != "ollama":
-        st.error(
-            f"Clé LLM manquante. Ajoute dans ton `.env` :\n\n"
-            f"`{'OPENAI_API_KEY' if provider == 'openai' else 'LLM_API_KEY'}=ta_clé`"
-        )
-
-    st.divider()
-
-    use_year = st.checkbox("Filtrer par année de publication")
-    year_str = None
-    if use_year:
-        c1, c2 = st.columns(2)
-        y_from = c1.number_input("De", min_value=1900, max_value=2026, value=2018)
-        y_to   = c2.number_input("À",  min_value=1900, max_value=2026, value=2026)
-        if y_from > y_to:
-            st.warning("⚠️ L'année de début doit être inférieure à l'année de fin.")
-        else:
-            year_str = f"{y_from}-{y_to}"
-
-    st.divider()
-
-    try:
-        _cm = CacheManager()
-        s = _cm.stats()
-        st.markdown("**📦 Cache local**")
-        col_a, col_b = st.columns(2)
-        col_a.metric("Recherches", s["searches"])
-        col_b.metric("Analyses",   s["analyses"])
-        col_a.metric("Papiers",    s["papers"])
-        col_b.metric("Résumés",    s["summaries"])
-        col_a.metric("Full texts", s.get("fulltexts", 0))  # ← ajoute cette ligne
-        if st.button("🗑️ Vider le cache", use_container_width=True):
-            _cm.clear()
-            st.success("Cache vidé.")
-            st.rerun()
-    except Exception:
-        pass
-
-
-# ── Auth guard ────────────────────────────────────────────────────────────────
-
-
-if not _get_llm_api_key() and os.getenv("LLM_PROVIDER", "groq").lower() != "ollama":
-    st.warning("⚠️ Clé LLM manquante. Configure ton `.env` avec `LLM_API_KEY=ta_clé`.")
-    st.stop()
-
-
-scholar, analyzer, cache = get_clients()
-
-
-if scholar is None:
-    st.error("❌ Impossible d'initialiser les clients. Vérifie ton fichier `.env`.")
-    st.stop()
-
-
-# ── Mode selector ─────────────────────────────────────────────────────────────
-
-
-mode = st.radio(
-    "Mode",
-    ["🔍 Evidence Finder", "📚 Literature Review", "📄 Paper Summarizer"],
-    horizontal=True,
-    label_visibility="collapsed",
-)
-st.divider()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODE 1 — Evidence Finder
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-if mode == "🔍 Evidence Finder":
-    st.markdown("### What is your claim, question, or topic?")
-    st.markdown(
-        "<small>Examples: *\"Transformer models outperform RNNs for NLP\"* · "
-        "*\"What are the limits of graph neural networks?\"* · "
-        "*\"CRISPR for genetic disease treatment\"*</small>",
-        unsafe_allow_html=True,
+    # Retry with alternative queries if too few relevant papers found
+    relevant_count = sum(
+        1 for _, a in results
+        if a.get("verdict") not in ("NEUTRAL", "INSUFFICIENT_DATA")
     )
 
-    examples = [
-        "Quantum computing improves combinatorial optimization",
-        "Social media use causes depression in teenagers",
-        "Large language models can reason about mathematics",
-        "Deep learning surpasses radiologists in medical imaging",
+    # Si moins de 2 papiers pertinents et qu'on n'a pas déjà retenté
+    if relevant_count < 2 and not st.session_state.get("retried_" + claim[:30]):
+        st.session_state["retried_" + claim[:30]] = True
+        status.warning(
+            "⚠️ Too few relevant papers found — retrying with alternative queries…"
+        )
+        # Forcer de nouvelles queries différentes
+        alt_queries = analyzer.transform_query(
+            claim + " randomized controlled trial meta-analysis review",
+            max_papers=max_papers
+        )
+        extra_papers = fetch_papers(alt_queries, scholar, cache, max_papers, year_filter, status)
+        # Fusionner en évitant les doublons
+        existing_ids = {p.get("paperId") for p, _ in results}
+        for paper in extra_papers:
+            pid = paper.get("paperId", "")
+            if pid and pid not in existing_ids:
+                existing_ids.add(pid)
+                analysis = analyzer.analyze_paper(paper, claim)
+                cache.set_analysis(pid, claim, analysis)
+                results.append((paper, analysis))
+
+    prog.empty()
+    status.info("⚖️ Synthesizing verdict from " + str(len(results)) + " papers… this can take 10-15s")
+    
+    # Overall verdict
+    overall = analyzer.overall_verdict(claim, results)
+    st.session_state["current_model"] = analyzer.current_model
+    _refresh_sidebar(cache, model_ph)
+    status.empty()
+
+    ov_key = overall.get("overall_verdict", "INSUFFICIENT_EVIDENCE")
+    badge_css, banner_css = OVERALL_CSS.get(ov_key, ("v-neutral", "ob-neutral"))
+    lbl = OVERALL_LABEL.get(ov_key, ov_key)
+
+    st.markdown("---")
+    st.markdown(
+        '<div class="overall-banner ' + banner_css + '">'
+        '<span class="vbadge ' + badge_css + '" style="font-size:1.15em;">' + lbl + '</span>'
+        '<p style="margin:12px 0 6px 0;">' + overall.get("verdict_explanation", "") + '</p>'
+        '<span class="mpill">🟢 Supporting: ' + str(overall.get("supporting_count", 0)) + '</span>'
+        '<span class="mpill">🔴 Contradicting: ' + str(overall.get("contradicting_count", 0)) + '</span>'
+        '<span class="mpill">⚪ Neutral/Unclear: ' + str(overall.get("neutral_count", 0)) + '</span>'
+        '</div>',
+        unsafe_allow_html=True,
+    )
+    st.markdown("---")
+
+    # Sépare pertinents et non-pertinents
+    relevant_results = [
+        (p, a) for p, a in results
+        if a.get("verdict") not in ("NEUTRAL", "INSUFFICIENT_DATA")
+        or a.get("relevance_score", 0) >= 5
     ]
-    st.markdown("**Quick examples:**")
-    ex_cols = st.columns(len(examples))
-    for col, ex in zip(ex_cols, examples):
-        if col.button(ex, use_container_width=True):
-            st.session_state["example_claim"] = ex
+    other_results = [
+        (p, a) for p, a in results
+        if (p, a) not in relevant_results
+    ]
+
+    # Affiche les pertinents en premier
+    st.subheader("📄 " + str(len(relevant_results)) + " Directly Relevant Papers")
+    for i, (paper, analysis) in enumerate(relevant_results):
+        render_paper_card(paper, analysis, i, analyzer, expanded=(i == 0))
+
+    # Les autres dans un expander collapsed
+    if other_results:
+        with st.expander(
+            "🔘 " + str(len(other_results)) + " Low-relevance papers (excluded from verdict)"
+        ):
+            for i, (paper, analysis) in enumerate(other_results):
+                render_paper_card(paper, analysis, len(relevant_results) + i, analyzer, expanded=False)
+
+    # Literature review
+    st.markdown("---")
+    with st.expander("📝 Generate Literature Review from these papers"):
+        if st.button("Generate literature review", key="litrev_btn"):
+            with st.spinner("Writing literature review…"):
+                review = analyzer.literature_review(claim, results)
+            st.session_state["litrev"] = review
+        if "litrev" in st.session_state:
+            st.markdown(st.session_state["litrev"])
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODE 2 — LITERATURE REVIEW
+# ══════════════════════════════════════════════════════════════════════════════
+def run_literature_review(topic, scholar, analyzer, cache, max_papers, year_filter, model_ph):
+    status = st.empty()
+
+    status.info("🔄 Building search strategy…")
+    queries = analyzer.transform_query(topic, topic_mode=True, max_papers=max_papers)
+    st.session_state["current_model"] = analyzer.current_model
+    _refresh_sidebar(cache, model_ph)
+    st.caption("🔍 Search queries: " + " | ".join(queries))
+
+    papers = fetch_papers(queries, scholar, cache, max_papers, year_filter, status)
+    if not papers:
+        status.error("No papers found. Try a different topic.")
+        return
+
+    status.info("🧠 Analysing " + str(len(papers)) + " papers…")
+    results = []
+    prog    = st.progress(0)
+    for i, paper in enumerate(papers):
+        pid      = paper.get("paperId", "")
+        cached_a = cache.get_analysis(pid, topic)
+        if cached_a is not None:
+            analysis = cached_a
+        else:
+            analysis = analyzer.analyze_paper(paper, topic)
+            cache.set_analysis(pid, topic, analysis)
+        results.append((paper, analysis))
+        st.session_state["current_model"] = analyzer.current_model
+        _refresh_sidebar(cache, model_ph)
+        prog.progress((i + 1) / len(papers))
+
+    prog.empty()
+    status.info("✍️ Writing literature review…")
+    review = analyzer.literature_review(topic, results)
+    st.session_state["current_model"] = analyzer.current_model
+    _refresh_sidebar(cache, model_ph)
+    status.empty()
+
+    st.markdown("---")
+    st.subheader("📝 Literature Review: " + topic)
+    st.markdown(review)
+
+    st.markdown("---")
+    st.subheader("📄 " + str(len(results)) + " Source Papers")
+    for i, (paper, analysis) in enumerate(results):
+        render_paper_card(paper, analysis, i, analyzer, expanded=False)
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MODE 3 — PAPER SUMMARIZER
+# ══════════════════════════════════════════════════════════════════════════════
+def run_paper_summarizer(topic, scholar, analyzer, cache, max_papers, year_filter, model_ph):
+    status = st.empty()
+
+    status.info("🔍 Searching papers…")
+    queries = analyzer.transform_query(topic, topic_mode=True, max_papers=max_papers)
+    st.session_state["current_model"] = analyzer.current_model
+    _refresh_sidebar(cache, model_ph)
+    st.caption("🔍 Search queries: " + " | ".join(queries))
+
+    papers = fetch_papers(queries, scholar, cache, max_papers, year_filter, status)
+    if not papers:
+        status.error("No papers found.")
+        return
+
+    status.empty()
+    st.subheader("📄 " + str(len(papers)) + " Papers on: " + topic)
+    st.info("Click **Summarize** on any paper to generate a detailed summary.")
+
+    for i, paper in enumerate(papers):
+        title   = paper.get("title", "Unknown Title")
+        year    = paper.get("year", "N/A")
+        authors = [a.get("name", "") for a in paper.get("authors", [])[:3]]
+        auth_s  = ", ".join(a for a in authors if a)
+        if len(paper.get("authors", [])) > 3:
+            auth_s += " et al."
+        cites    = paper.get("citationCount")
+        abstract = (paper.get("abstract") or "").strip()
+        doi      = (paper.get("externalIds") or {}).get("DOI", "")
+        url      = paper.get("url") or ("https://doi.org/" + doi if doi else "")
+
+        with st.expander("📄 [" + str(i+1) + "] " + title + " (" + str(year) + ")", expanded=(i == 0)):
+            meta = "👤 " + (auth_s or "Unknown")
+            if cites is not None:
+                meta += " &nbsp;|&nbsp; 📚 " + str(cites) + " citations"
+            if url:
+                meta += " &nbsp;|&nbsp; 🔗 [Link](" + url + ")"
+            st.caption(meta)
+
+            if abstract:
+                with st.expander("📜 Abstract"):
+                    st.write(abstract)
+
+            skey = "psum_" + str(i)
+            if st.button("🔍 Summarize", key="psbtn_" + str(i)):
+                with st.spinner("Summarizing…"):
+                    st.session_state[skey] = analyzer.summarize(paper)
+                st.session_state["current_model"] = analyzer.current_model
+                _refresh_sidebar(cache, model_ph)
+            if skey in st.session_state:
+                st.markdown(st.session_state[skey])
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  MAIN
+# ══════════════════════════════════════════════════════════════════════════════
+def main():
+    scholar, analyzer, cache = get_clients()
+
+    if not scholar:
+        st.error("⚠️ LLM_API_KEY not set. Add it to your .env file.")
+        st.code("LLM_API_KEY=gsk_...\nLLM_PROVIDER=groq")
+        st.stop()
+
+    # Sidebar
+    with st.sidebar:
+        st.markdown("## 🔬 Academic Evidence Finder")
+        st.markdown("---")
+        st.markdown("### ⚙️ Settings")
+        max_papers  = st.slider("Max papers to analyse", 3, 15, 7)
+        year_filter = st.text_input("Year filter (e.g. 2018-2024)", "")
+        st.markdown("---")
+        st.markdown("### 🤖 Active model")
+        model_ph = st.empty()
+        _refresh_sidebar(cache, model_ph)
+        st.markdown("---")
+        if st.button("🗑️ Clear cache", use_container_width=True):
+            cache.clear()
+            st.success("Cache cleared!")
             st.rerun()
 
-    col_in, col_btn = st.columns([5, 1])
-    with col_in:
-        user_input = st.text_input(
-            "Claim",
-            value=st.session_state.get("example_claim", ""),
+    # Header
+    st.title("🔬 Academic Evidence Finder")
+    st.markdown("*Verify claims, explore literature and summarize papers — powered by AI + Semantic Scholar*")
+    st.markdown("---")
+
+    # Mode selector
+    mode = st.radio(
+        "Select mode:",
+        ["🔬 Claim Verifier", "📚 Literature Review", "📄 Paper Summarizer"],
+        horizontal=True,
+    )
+    st.markdown("")
+
+    if mode == "🔬 Claim Verifier":
+        st.markdown("##### Enter a falsifiable scientific claim to verify against the literature")
+        claim = st.text_input(
+            "Claim:",
+            placeholder="e.g. Coffee consumption reduces the risk of Parkinson's disease",
             label_visibility="collapsed",
-            placeholder="Enter a claim, question, or topic…",
         )
-    with col_btn:
-        go = st.button("Search 🔍", type="primary", use_container_width=True)
+        col1, col2 = st.columns([1, 6])
+        with col1:
+            go = st.button("🔍 Analyse", type="primary", use_container_width=True)
+        with col2:
+            if claim:
+                st.caption('Claim: *"' + claim + '"*')
+        if go and claim.strip():
+            run_claim_verifier(claim.strip(), scholar, analyzer, cache, max_papers, year_filter, model_ph)
+        elif go:
+            st.warning("Please enter a claim.")
 
-    if "example_claim" in st.session_state and user_input:
-        del st.session_state["example_claim"]
-
-    if go and user_input:
-
-        # ── Claim validation (pre-flight) ─────────────────────────────────────
-        early_exit = analyzer.validate_claim(user_input)
-        if early_exit is not None:
-            st.markdown("## 📊 Overall Verdict")
-            _render_overall_verdict(early_exit)
-            st.stop()
-
-        # ── Normal pipeline ───────────────────────────────────────────────────
-        results, overall = run_search(user_input, scholar, analyzer, cache, year_str)
-
-        if not results:
-            st.error("No relevant papers found. Try rephrasing your query.")
-            st.stop()
-
-        st.markdown("## 📊 Overall Verdict")
-        _render_overall_verdict(overall)
-
-        st.markdown(f"## 📚 {len(results)} Papers Analysed")
-        for i, (paper, analysis) in enumerate(results):
-            render_paper_card(paper, analysis, i, expanded=(i < 2))
-
-        st.divider()
-        export = {
-            "claim": user_input,
-            "overall_verdict": overall,
-            "papers": [
-                {
-                    "title":    p.get("title"),
-                    "year":     p.get("year"),
-                    "authors":  [a.get("name") for a in p.get("authors", [])],
-                    "abstract": (p.get("abstract") or "")[:500],
-                    "url":      f"https://www.semanticscholar.org/paper/{p.get('paperId', '')}",
-                    "analysis": a,
-                }
-                for p, a in results
-            ],
-        }
-        st.download_button(
-            "📥 Export results as JSON",
-            data=json.dumps(export, indent=2, default=str),
-            file_name=f"evidence_{user_input[:40].replace(' ', '_')}.json",
-            mime="application/json",
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODE 2 — Literature Review
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-elif mode == "📚 Literature Review":
-    st.markdown("### Generate a literature review from retrieved papers")
-
-    col_in, col_btn = st.columns([5, 1])
-    with col_in:
-        topic_input = st.text_input(
-            "Topic",
+    elif mode == "📚 Literature Review":
+        st.markdown("##### Enter a research topic to generate an academic literature review")
+        topic = st.text_input(
+            "Topic:",
+            placeholder="e.g. Gut microbiome and mental health",
             label_visibility="collapsed",
-            placeholder="e.g. AI in healthcare diagnosis, climate change and biodiversity…",
         )
-    with col_btn:
-        go_lr = st.button("Generate 📚", type="primary", use_container_width=True)
+        col1, col2 = st.columns([1, 6])
+        with col1:
+            go = st.button("📝 Generate Review", type="primary", use_container_width=True)
+        with col2:
+            if topic:
+                st.caption('Topic: *"' + topic + '"*')
+        if go and topic.strip():
+            run_literature_review(topic.strip(), scholar, analyzer, cache, max_papers, year_filter, model_ph)
+        elif go:
+            st.warning("Please enter a topic.")
 
-    if go_lr and topic_input:
-        results, _ = run_search(topic_input, scholar, analyzer, cache, year_str)
-        if not results:
-            st.error("No papers found. Try a different topic.")
-            st.stop()
-
-        with st.spinner("✍️ Writing literature review…"):
-            review = analyzer.literature_review(topic_input, results)
-
-        st.markdown("### 📖 Literature Review")
-        st.markdown(review)
-        st.divider()
-        st.markdown("### 📚 Papers used")
-        for i, (paper, analysis) in enumerate(results):
-            render_paper_card(paper, analysis, i)
-
-        st.download_button(
-            "📥 Export as Markdown",
-            data=f"# Literature Review: {topic_input}\n\n{review}",
-            file_name=f"litreview_{topic_input[:30].replace(' ', '_')}.md",
-            mime="text/markdown",
-        )
-
-
-# ══════════════════════════════════════════════════════════════════════════════
-# MODE 3 — Paper Summarizer
-# ══════════════════════════════════════════════════════════════════════════════
-
-
-elif mode == "📄 Paper Summarizer":
-    st.markdown("### Find and summarize a specific paper")
-
-    col_in, col_btn = st.columns([5, 1])
-    with col_in:
-        paper_query = st.text_input(
-            "Paper title or topic",
+    elif mode == "📄 Paper Summarizer":
+        st.markdown("##### Enter a topic or keywords to find and summarize relevant papers")
+        topic = st.text_input(
+            "Topic / Keywords:",
+            placeholder="e.g. CRISPR gene editing cancer therapy",
             label_visibility="collapsed",
-            placeholder='e.g. "Attention Is All You Need", "AlphaFold protein structure prediction"',
         )
-    with col_btn:
-        go_sum = st.button("Find 🔎", type="primary", use_container_width=True)
+        col1, col2 = st.columns([1, 6])
+        with col1:
+            go = st.button("🔎 Find Papers", type="primary", use_container_width=True)
+        with col2:
+            if topic:
+                st.caption('Searching: *"' + topic + '"*')
+        if go and topic.strip():
+            run_paper_summarizer(topic.strip(), scholar, analyzer, cache, max_papers, year_filter, model_ph)
+        elif go:
+            st.warning("Please enter a topic.")
 
-    if go_sum and paper_query:
-        with st.spinner("Searching…"):
-            cached = cache.get_search(f"__sum__{paper_query}")
-            if cached is not None:
-                papers = cached
-            else:
-                papers = scholar.search(paper_query, limit=6)
-                cache.set_search(f"__sum__{paper_query}", papers)
-
-        if not papers:
-            st.error("No papers found.")
-            st.stop()
-
-        options = {
-            f"{p.get('title', 'Unknown')} ({p.get('year', 'N/A')})": p
-            for p in papers if p.get("abstract")
-        }
-        if not options:
-            st.error("None of the found papers have abstracts available.")
-            st.stop()
-
-        chosen_title = st.selectbox("Select a paper:", list(options.keys()))
-        chosen_paper = options[chosen_title]
-
-        if st.button("Summarize ✨", type="primary"):
-            pid = chosen_paper.get("paperId", "")
-            cached_sum = cache.get_summary(pid)
-            if cached_sum:
-                summary = cached_sum
-            else:
-                with st.spinner("Summarizing…"):
-                    summary = analyzer.summarize(chosen_paper)
-                    cache.set_summary(pid, summary)
-
-            authors = [a.get("name", "") for a in chosen_paper.get("authors", [])[:5]]
-            cites   = chosen_paper.get("citationCount")
-
-            st.markdown(f"### 📄 {chosen_paper.get('title')}")
-            meta = f"**Year:** {chosen_paper.get('year', 'N/A')}"
-            if cites:
-                meta += f"&nbsp;&nbsp;|&nbsp;&nbsp;**Citations:** {int(cites):,}"
-            meta += f"&nbsp;&nbsp;|&nbsp;&nbsp;**Authors:** {', '.join(a for a in authors if a)}"
-            st.markdown(meta)
-            if pid:
-                st.markdown(f"[🔗 View on Semantic Scholar](https://www.semanticscholar.org/paper/{pid})")
-
-            st.divider()
-            st.markdown("### 📋 Summary")
-            st.markdown(summary)
-
-            with st.expander("📄 Full abstract"):
-                st.markdown(chosen_paper.get("abstract") or "*Not available.*")
+if __name__ == "__main__":
+    main()
