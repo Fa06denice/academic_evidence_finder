@@ -16,20 +16,20 @@ from cache_manager import CacheManager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── App ────────────────────────────────────────────────────────────────────────
+# ── App ──────────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Academic Evidence Finder API", version="1.0.0")
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
 executor = ThreadPoolExecutor(max_workers=4)
 
-# ── Clients (singleton) ────────────────────────────────────────────────────────
+# ── Clients (singleton) ────────────────────────────────────────────────────────────────
 def _get_clients():
     provider  = os.getenv("LLM_PROVIDER", "groq").lower()
     api_key   = os.getenv("LLM_API_KEY", "")
@@ -43,7 +43,7 @@ def _get_clients():
 
 scholar, analyzer, cache = _get_clients()
 
-# ── Helpers ────────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────────────────
 def _sse(event_type: str, data: dict) -> str:
     payload = json.dumps({"type": event_type, **data}, ensure_ascii=False)
     return f"data: {payload}\n\n"
@@ -63,7 +63,7 @@ def _fetch_papers(queries: list, max_papers: int, year: Optional[str]) -> list:
     papers = sorted(papers, key=lambda p: p.get("citationCount") or 0, reverse=True)
     return papers[:max_papers]
 
-# ── Request models ─────────────────────────────────────────────────────────────
+# ── Request models ───────────────────────────────────────────────────────────────────
 class ClaimRequest(BaseModel):
     claim: str
     max_papers: int = 7
@@ -76,9 +76,8 @@ class TopicRequest(BaseModel):
 
 class SummarizeRequest(BaseModel):
     paper: dict
-    paper: dict
 
-# ── Routes ─────────────────────────────────────────────────────────────────────
+# ── Routes ──────────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 def health():
