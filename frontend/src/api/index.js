@@ -1,12 +1,12 @@
-const BASE = import.meta.env.VITE_API_URL || ''
+// Toutes les requêtes passent par le proxy Vercel /api/*
+// Plus de problème CORS Safari
 
 export async function streamPost(path, body, handlers = {}) {
-  const url = BASE + path
-  console.log('[API] POST', url, JSON.stringify(body))
+  console.log('[API] POST', path, JSON.stringify(body))
 
   let res
   try {
-    res = await fetch(url, {
+    res = await fetch(path, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -60,17 +60,17 @@ export async function streamPost(path, body, handlers = {}) {
 
 function dispatch(evt, h) {
   switch (evt.type) {
-    case 'progress':  h.onProgress?.(evt); break
-    case 'papers':    h.onPapers?.(evt.data); break
-    case 'analysis':  h.onAnalysis?.(evt); break
-    case 'verdict':   h.onVerdict?.(evt.data); break
-    case 'review':    h.onReview?.(evt.data); break
-    case 'error':     h.onError?.(evt); break
+    case 'progress': h.onProgress?.(evt); break
+    case 'papers':   h.onPapers?.(evt.data); break
+    case 'analysis': h.onAnalysis?.(evt); break
+    case 'verdict':  h.onVerdict?.(evt.data); break
+    case 'review':   h.onReview?.(evt.data); break
+    case 'error':    h.onError?.(evt); break
   }
 }
 
 export async function summarizePaper(paper) {
-  const res = await fetch(BASE + '/api/summarize', {
+  const res = await fetch('/api/summarize', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ paper }),
