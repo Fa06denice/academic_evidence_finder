@@ -76,6 +76,7 @@ class TopicRequest(BaseModel):
 
 class SummarizeRequest(BaseModel):
     paper: dict
+    paper: dict
 
 # ── Routes ─────────────────────────────────────────────────────────────────────
 
