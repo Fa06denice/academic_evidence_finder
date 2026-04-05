@@ -1,1 +1,82 @@
-Ly8gVG91dGVzIGxlcyByZXF1w6p0ZXMgcGFzc2VudCBwYXIgbGUgYmFja2VuZCBSYWlsd2F5IHZpYSBWSVRFX0FQSV9VUkwKCmNvbnN0IEFQSV9CQVNFID0gaW1wb3J0Lm1ldGEuZW52LlZJVEVfQVBJX1VSTCB8fCAnJwoKZXhwb3J0IGFzeW5jIGZ1bmN0aW9uIHN0cmVhbVBvc3QocGF0aCwgYm9keSwgaGFuZGxlcnMgPSB7fSkgewogIGNvbnN0IHVybCA9IEFQSV9CQVNFICsgcGF0aAogIGNvbnNvbGUubG9nKCdbQVBJXSBQT1NUJywgdXJsLCBKU09OLnN0cmluZ2lmeShib2R5KSkKCiAgbGV0IHJlcwogIHRyeSB7CiAgICByZXMgPSBhd2FpdCBmZXRjaCh1cmwsIHsKICAgICAgbWV0aG9kOiAnUE9TVCcsCiAgICAgIGhlYWRlcnM6IHsgJ0NvbnRlbnQtVHlwZSc6ICdhcHBsaWNhdGlvbi9qc29uJyB9LAogICAgICBib2R5OiBKU09OLnN0cmluZ2lmeShib2R5KSwKICAgIH0pCiAgfSBjYXRjaCAoZXJyKSB7CiAgICBjb25zb2xlLmVycm9yKCdbQVBJXSBOZXR3b3JrIGVycm9yJywgZXJyKQogICAgaGFuZGxlcnMub25FcnJvcj8uKHsgbWVzc2FnZTogJ05ldHdvcmsgZXJyb3I6ICcgKyBlcnIubWVzc2FnZSB9KQogICAgaGFuZGxlcnMub25Eb25lPy4oKQogICAgcmV0dXJuCiAgfQoKICBpZiAoIXJlcy5vaykgewogICAgbGV0IGRldGFpbCA9IHJlcy5zdGF0dXNUZXh0CiAgICB0cnkgeyBjb25zdCBqID0gYXdhaXQgcmVzLmpzb24oKTsgZGV0YWlsID0gSlNPTi5zdHJpbmdpZnkoaikgfSBjYXRjaCB7fQogICAgY29uc29sZS5lcnJvcignW0FQSV0gSFRUUCcsIHJlcy5zdGF0dXMsIGRldGFpbCkKICAgIGhhbmRsZXJzLm9uRXJyb3I/Lih7IG1lc3NhZ2U6ICdIVFRQICcgKyByZXMuc3RhdHVzICsgJzogJyArIGRldGFpbCB9KQogICAgaGFuZGxlcnMub25Eb25lPy4oKQogICAgcmV0dXJuCiAgfQoKICBjb25zdCByZWFkZXIgPSByZXMuYm9keS5nZXRSZWFkZXIoKQogIGNvbnN0IGRlY29kZXIgPSBuZXcgVGV4dERlY29kZXIoKQogIGxldCBidWZmZXIgPSAnJwoKICB0cnkgewogICAgd2hpbGUgKHRydWUpIHsKICAgICAgY29uc3QgeyBkb25lLCB2YWx1ZSB9ID0gYXdhaXQgcmVhZGVyLnJlYWQoKQogICAgICBpZiAoZG9uZSkgYnJlYWsKICAgICAgYnVmZmVyICs9IGRlY29kZXIuZGVjb2RlKHZhbHVlLCB7IHN0cmVhbTogdHJ1ZSB9KQogICAgICBjb25zdCBwYXJ0cyA9IGJ1ZmZlci5zcGxpdCgnXG5cbicpCiAgICAgIGJ1ZmZlciA9IHBhcnRzLnBvcCgpCiAgICAgIGZvciAoY29uc3QgcGFydCBvZiBwYXJ0cykgewogICAgICAgIGZvciAoY29uc3QgbGluZSBvZiBwYXJ0LnNwbGl0KCdcbicpKSB7CiAgICAgICAgICBpZiAoIWxpbmUuc3RhcnRzV2l0aCgnZGF0YTonKSkgY29udGludWUKICAgICAgICAgIGNvbnN0IHJhdyA9IGxpbmUuc2xpY2UoNSkudHJpbSgpCiAgICAgICAgICBpZiAoIXJhdyB8fCByYXcgPT09ICdbRE9ORV0nKSBjb250aW51ZQogICAgICAgICAgbGV0IGV2dAogICAgICAgICAgdHJ5IHsgZXZ0ID0gSlNPTi5wYXJzZShyYXcpIH0gY2F0Y2ggeyBjb250aW51ZSB9CiAgICAgICAgICBjb25zb2xlLmxvZygnW1NTRV0nLCBldnQudHlwZSwgZXZ0KQogICAgICAgICAgZGlzcGF0Y2goZXZ0LCBoYW5kbGVycykKICAgICAgICB9CiAgICAgIH0KICAgIH0KICB9IGNhdGNoIChlcnIpIHsKICAgIGNvbnNvbGUuZXJyb3IoJ1tTU0VdIHJlYWQgZXJyb3InLCBlcnIpCiAgICBoYW5kbGVycy5vbkVycm9yPy4oeyBtZXNzYWdlOiAnU3RyZWFtIGVycm9yOiAnICsgZXJyLm1lc3NhZ2UgfSkKICB9CgogIGhhbmRsZXJzLm9uRG9uZT8uKCkKfQoKZnVuY3Rpb24gZGlzcGF0Y2goZXZ0LCBoKSB7CiAgc3dpdGNoIChldnQudHlwZSkgewogICAgY2FzZSAncHJvZ3Jlc3MnOiBoLm9uUHJvZ3Jlc3M/LihldnQpOyBicmVhawogICAgY2FzZSAncGFwZXJzJzogICBoLm9uUGFwZXJzPy4oZXZ0LmRhdGEpOyBicmVhawogICAgY2FzZSAnYW5hbHlzaXMnOiBoLm9uQW5hbHlzaXM/LihldnQpOyBicmVhawogICAgY2FzZSAndmVyZGljdCc6ICBoLm9uVmVyZGljdD8uKGV2dC5kYXRhKTsgYnJlYWsKICAgIGNhc2UgJ3Jldmlldyc6ICAgaC5vblJldmlldz8uKGV2dC5kYXRhKTsgYnJlYWsKICAgIGNhc2UgJ2Vycm9yJzogICAgaC5vbkVycm9yPy4oZXZ0KTsgYnJlYWsKICB9Cn0KCmV4cG9ydCBhc3luYyBmdW5jdGlvbiBzdW1tYXJpemVQYXBlcihwYXBlcikgewogIGNvbnN0IHJlcyA9IGF3YWl0IGZldGNoKEFQSV9CQVNFICsgJy9hcGkvc3VtbWFyaXplJywgewogICAgbWV0aG9kOiAnUE9TVCcsCiAgICBoZWFkZXJzOiB7ICdDb250ZW50LVR5cGUnOiAnYXBwbGljYXRpb24vanNvbicgfSwKICAgIGJvZHk6IEpTT04uc3RyaW5naWZ5KHsgcGFwZXIgfSksCiAgfSkKICBpZiAoIXJlcy5vaykgdGhyb3cgbmV3IEVycm9yKCdIVFRQICcgKyByZXMuc3RhdHVzKQogIHJldHVybiAoYXdhaXQgcmVzLmpzb24oKSkuc3VtbWFyeQp9Cg==
+// Toutes les requêtes passent par le backend Railway via VITE_API_URL
+
+const API_BASE = import.meta.env.VITE_API_URL || ''
+
+export async function streamPost(path, body, handlers = {}) {
+  const url = API_BASE + path
+  console.log('[API] POST', url, JSON.stringify(body))
+
+  let res
+  try {
+    res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  } catch (err) {
+    console.error('[API] Network error', err)
+    handlers.onError?.({ message: 'Network error: ' + err.message })
+    handlers.onDone?.()
+    return
+  }
+
+  if (!res.ok) {
+    let detail = res.statusText
+    try { const j = await res.json(); detail = JSON.stringify(j) } catch {}
+    console.error('[API] HTTP', res.status, detail)
+    handlers.onError?.({ message: 'HTTP ' + res.status + ': ' + detail })
+    handlers.onDone?.()
+    return
+  }
+
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true })
+      const parts = buffer.split('\n\n')
+      buffer = parts.pop()
+      for (const part of parts) {
+        for (const line of part.split('\n')) {
+          if (!line.startsWith('data:')) continue
+          const raw = line.slice(5).trim()
+          if (!raw || raw === '[DONE]') continue
+          let evt
+          try { evt = JSON.parse(raw) } catch { continue }
+          console.log('[SSE]', evt.type, evt)
+          dispatch(evt, handlers)
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[SSE] read error', err)
+    handlers.onError?.({ message: 'Stream error: ' + err.message })
+  }
+
+  handlers.onDone?.()
+}
+
+function dispatch(evt, h) {
+  switch (evt.type) {
+    case 'progress': h.onProgress?.(evt); break
+    case 'papers':   h.onPapers?.(evt.data); break
+    case 'analysis': h.onAnalysis?.(evt); break
+    case 'verdict':  h.onVerdict?.(evt.data); break
+    case 'review':   h.onReview?.(evt.data); break
+    case 'error':    h.onError?.(evt); break
+  }
+}
+
+export async function summarizePaper(paper) {
+  const res = await fetch(API_BASE + '/api/summarize', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ paper }),
+  })
+  if (!res.ok) throw new Error('HTTP ' + res.status)
+  return (await res.json()).summary
+}
