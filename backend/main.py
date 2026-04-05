@@ -16,7 +16,6 @@ from cache_manager import CacheManager
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── App ──────────────────────────────────────────────────────────────────────────────
 app = FastAPI(title="Academic Evidence Finder API", version="1.0.0")
 
 app.add_middleware(
@@ -29,7 +28,6 @@ app.add_middleware(
 
 executor = ThreadPoolExecutor(max_workers=4)
 
-# ── Clients (singleton) ────────────────────────────────────────────────────────────────
 def _get_clients():
     provider  = os.getenv("LLM_PROVIDER", "groq").lower()
     api_key   = os.getenv("LLM_API_KEY", "")
@@ -43,16 +41,29 @@ def _get_clients():
 
 scholar, analyzer, cache = _get_clients()
 
-# ── Global exception handler ───────────────────────────────────────────────────────
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    logger.exception("Unhandled exception on %s", request.url.path)
-    return JSONResponse(
-        status_code=200,
-        content={"error": str(exc)},
-    )
+# ── Cache helpers (compatible with all CacheManager versions) ─────────────────
+def _cache_get_summary(pid: str) -> Optional[str]:
+    try:
+        if hasattr(cache, 'get_summary'):
+            return cache.get_summary(pid)
+        # fallback: reuse paper cache with a summary_ prefix key
+        entry = cache.cache.get(f"summary_{pid}")
+        return entry.get("data") if isinstance(entry, dict) else None
+    except Exception:
+        return None
 
-# ── Helpers ──────────────────────────────────────────────────────────────────────────────
+def _cache_set_summary(pid: str, summary: str):
+    try:
+        if hasattr(cache, 'set_summary'):
+            cache.set_summary(pid, summary)
+        else:
+            from datetime import datetime
+            cache.cache[f"summary_{pid}"] = {"data": summary, "ts": datetime.now().isoformat()}
+            cache._save()
+    except Exception:
+        pass
+
+# ── Helpers ───────────────────────────────────────────────────────────────────
 def _sse(event_type: str, data: dict) -> str:
     payload = json.dumps({"type": event_type, **data}, ensure_ascii=False)
     return f"data: {payload}\n\n"
@@ -72,7 +83,7 @@ def _fetch_papers(queries: list, max_papers: int, year: Optional[str]) -> list:
     papers = sorted(papers, key=lambda p: p.get("citationCount") or 0, reverse=True)
     return papers[:max_papers]
 
-# ── Request models ───────────────────────────────────────────────────────────────────
+# ── Request models ────────────────────────────────────────────────────────────
 class ClaimRequest(BaseModel):
     claim: str
     max_papers: int = 7
@@ -86,7 +97,7 @@ class TopicRequest(BaseModel):
 class SummarizeRequest(BaseModel):
     paper: dict
 
-# ── Routes ──────────────────────────────────────────────────────────────────────────────
+# ── Routes ────────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 def health():
@@ -103,17 +114,17 @@ def verify_claim(req: ClaimRequest):
                 yield _sse("verdict", {"data": early})
                 yield _sse("done", {})
                 return
-            yield _sse("progress", {"message": "Generating search queries…", "step": 1, "total": 4})
+            yield _sse("progress", {"message": "Generating search queries\u2026", "step": 1, "total": 4})
             queries = analyzer.transform_query(req.claim)
-            yield _sse("progress", {"message": "Searching literature…", "step": 2, "total": 4})
+            yield _sse("progress", {"message": "Searching literature\u2026", "step": 2, "total": 4})
             papers = _fetch_papers(queries, req.max_papers, req.year_filter)
             if not papers:
                 yield _sse("error", {"message": "No papers found. Try rephrasing."})
                 yield _sse("done", {})
                 return
             yield _sse("papers", {"data": papers})
-            yield _sse("progress", {"message": f"Analysing {len(papers)} papers…", "step": 3, "total": 4})
-            results, low_rel = [], []
+            yield _sse("progress", {"message": f"Analysing {len(papers)} papers\u2026", "step": 3, "total": 4})
+            results = []
             for i, paper in enumerate(papers):
                 pid      = paper.get("paperId", "")
                 cached   = cache.get_analysis(pid, req.claim)
@@ -123,9 +134,7 @@ def verify_claim(req: ClaimRequest):
                 yield _sse("analysis", {"index": i, "total": len(papers), "paper_id": pid, "analysis": analysis})
                 if analysis.get("relevance_score", 0) >= 5:
                     results.append((paper, analysis))
-                else:
-                    low_rel.append((paper, analysis))
-            yield _sse("progress", {"message": "Synthesizing verdict…", "step": 4, "total": 4})
+            yield _sse("progress", {"message": "Synthesizing verdict\u2026", "step": 4, "total": 4})
             overall = analyzer.overall_verdict(req.claim, results)
             yield _sse("verdict", {"data": overall})
             yield _sse("done", {})
@@ -141,9 +150,9 @@ def verify_claim(req: ClaimRequest):
 def literature_review(req: TopicRequest):
     def generate():
         try:
-            yield _sse("progress", {"message": "Generating search queries…", "step": 1, "total": 3})
+            yield _sse("progress", {"message": "Generating search queries\u2026", "step": 1, "total": 3})
             queries = analyzer.transform_query(req.topic)
-            yield _sse("progress", {"message": "Searching literature…", "step": 2, "total": 3})
+            yield _sse("progress", {"message": "Searching literature\u2026", "step": 2, "total": 3})
             papers = _fetch_papers(queries, req.max_papers, req.year_filter)
             if not papers:
                 yield _sse("error", {"message": "No papers found. Try rephrasing."})
@@ -159,7 +168,7 @@ def literature_review(req: TopicRequest):
                     cache.set_analysis(pid, req.topic, analysis)
                 yield _sse("analysis", {"index": i, "total": len(papers), "paper_id": pid, "analysis": analysis})
                 results.append((paper, analysis))
-            yield _sse("progress", {"message": "Writing literature review…", "step": 3, "total": 3})
+            yield _sse("progress", {"message": "Writing literature review\u2026", "step": 3, "total": 3})
             review = analyzer.literature_review(req.topic, results)
             yield _sse("review", {"data": review})
             yield _sse("done", {})
@@ -175,9 +184,9 @@ def literature_review(req: TopicRequest):
 def search_papers(req: TopicRequest):
     def generate():
         try:
-            yield _sse("progress", {"message": "Generating search queries…"})
+            yield _sse("progress", {"message": "Generating search queries\u2026"})
             queries = analyzer.transform_query(req.topic)
-            yield _sse("progress", {"message": "Searching…"})
+            yield _sse("progress", {"message": "Searching\u2026"})
             papers = _fetch_papers(queries, req.max_papers, req.year_filter)
             if not papers:
                 yield _sse("error", {"message": "No papers found. Try rephrasing."})
@@ -199,12 +208,12 @@ async def summarize_paper(req: SummarizeRequest):
     try:
         paper   = req.paper
         pid     = paper.get("paperId", "")
-        cached  = cache.get_summary(pid) if pid else None
+        cached  = _cache_get_summary(pid) if pid else None
         if cached:
             return {"summary": cached}
         summary = analyzer.summarize(paper)
         if pid:
-            cache.set_summary(pid, summary)
+            _cache_set_summary(pid, summary)
         return {"summary": summary}
     except Exception as exc:
         logger.exception("summarize_paper error")
