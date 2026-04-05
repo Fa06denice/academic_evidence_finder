@@ -92,3 +92,12 @@ class CacheManager:
                 os.remove(self.cache_file)
         except OSError as exc:
             logger.error("Could not delete cache file: %s", exc)
+
+    def get_summary(self, paper_id: str):
+        return self._data.get("summaries", {}).get(paper_id)
+
+    def set_summary(self, paper_id: str, summary: str):
+        if "summaries" not in self._data:
+            self._data["summaries"] = {}
+        self._data["summaries"][paper_id] = summary
+        self._save()
