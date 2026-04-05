@@ -46,7 +46,6 @@ def _cache_get_summary(pid: str) -> Optional[str]:
     try:
         if hasattr(cache, 'get_summary'):
             return cache.get_summary(pid)
-        # fallback: reuse paper cache with a summary_ prefix key
         entry = cache.cache.get(f"summary_{pid}")
         return entry.get("data") if isinstance(entry, dict) else None
     except Exception:
@@ -63,16 +62,19 @@ def _cache_set_summary(pid: str, summary: str):
     except Exception:
         pass
 
-# ── Helpers ───────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────
 def _sse(event_type: str, data: dict) -> str:
     payload = json.dumps({"type": event_type, **data}, ensure_ascii=False)
     return f"data: {payload}\n\n"
 
 def _fetch_papers(queries: list, max_papers: int, year: Optional[str]) -> list:
+    """Fetch from Semantic Scholar, dedup, sort by citations, return top max_papers."""
+    # Ask for more per query to compensate for deduplication
+    per_query = max(max_papers, 15)
     seen, papers = set(), []
     for q in queries:
         cached = cache.get_search(q)
-        batch  = cached if cached else scholar.search(q, limit=max_papers, year=year or None)
+        batch  = cached if cached else scholar.search(q, limit=per_query, year=year or None)
         if not cached and batch:
             cache.set_search(q, batch)
         for p in batch:
@@ -115,7 +117,7 @@ def verify_claim(req: ClaimRequest):
                 yield _sse("done", {})
                 return
             yield _sse("progress", {"message": "Generating search queries\u2026", "step": 1, "total": 4})
-            queries = analyzer.transform_query(req.claim)
+            queries = analyzer.transform_query(req.claim, topic_mode=False, max_papers=req.max_papers)
             yield _sse("progress", {"message": "Searching literature\u2026", "step": 2, "total": 4})
             papers = _fetch_papers(queries, req.max_papers, req.year_filter)
             if not papers:
@@ -151,7 +153,7 @@ def literature_review(req: TopicRequest):
     def generate():
         try:
             yield _sse("progress", {"message": "Generating search queries\u2026", "step": 1, "total": 3})
-            queries = analyzer.transform_query(req.topic)
+            queries = analyzer.transform_query(req.topic, topic_mode=True, max_papers=req.max_papers)
             yield _sse("progress", {"message": "Searching literature\u2026", "step": 2, "total": 3})
             papers = _fetch_papers(queries, req.max_papers, req.year_filter)
             if not papers:
@@ -185,7 +187,7 @@ def search_papers(req: TopicRequest):
     def generate():
         try:
             yield _sse("progress", {"message": "Generating search queries\u2026"})
-            queries = analyzer.transform_query(req.topic)
+            queries = analyzer.transform_query(req.topic, topic_mode=True, max_papers=req.max_papers)
             yield _sse("progress", {"message": "Searching\u2026"})
             papers = _fetch_papers(queries, req.max_papers, req.year_filter)
             if not papers:
