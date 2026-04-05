@@ -4,9 +4,9 @@ import os
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
-from fastapi import FastAPI, Query
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 
 from analyzer import PaperAnalyzer
@@ -42,6 +42,15 @@ def _get_clients():
     return scholar, analyzer, cache
 
 scholar, analyzer, cache = _get_clients()
+
+# ── Global exception handler ───────────────────────────────────────────────────────
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.exception("Unhandled exception on %s", request.url.path)
+    return JSONResponse(
+        status_code=200,
+        content={"error": str(exc)},
+    )
 
 # ── Helpers ──────────────────────────────────────────────────────────────────────────────
 def _sse(event_type: str, data: dict) -> str:
@@ -87,24 +96,15 @@ def health():
 
 @app.post("/api/verify")
 def verify_claim(req: ClaimRequest):
-    """
-    SSE stream: verify a scientific claim against the literature.
-    Events: progress | papers | analysis | verdict | done | error
-    """
     def generate():
         try:
-            # 1. Validate
             early = analyzer.validate_claim(req.claim)
             if early:
                 yield _sse("verdict", {"data": early})
                 yield _sse("done", {})
                 return
-
-            # 2. Transform query
             yield _sse("progress", {"message": "Generating search queries…", "step": 1, "total": 4})
             queries = analyzer.transform_query(req.claim)
-
-            # 3. Fetch papers
             yield _sse("progress", {"message": "Searching literature…", "step": 2, "total": 4})
             papers = _fetch_papers(queries, req.max_papers, req.year_filter)
             if not papers:
@@ -112,52 +112,37 @@ def verify_claim(req: ClaimRequest):
                 yield _sse("done", {})
                 return
             yield _sse("papers", {"data": papers})
-
-            # 4. Analyse each paper
             yield _sse("progress", {"message": f"Analysing {len(papers)} papers…", "step": 3, "total": 4})
             results, low_rel = [], []
             for i, paper in enumerate(papers):
-                pid     = paper.get("paperId", "")
-                cached  = cache.get_analysis(pid, req.claim)
+                pid      = paper.get("paperId", "")
+                cached   = cache.get_analysis(pid, req.claim)
                 analysis = cached if cached else analyzer.analyze_paper(paper, req.claim)
                 if not cached and pid:
                     cache.set_analysis(pid, req.claim, analysis)
-                yield _sse("analysis", {
-                    "index": i, "total": len(papers),
-                    "paper_id": pid,
-                    "analysis": analysis,
-                })
+                yield _sse("analysis", {"index": i, "total": len(papers), "paper_id": pid, "analysis": analysis})
                 if analysis.get("relevance_score", 0) >= 5:
                     results.append((paper, analysis))
                 else:
                     low_rel.append((paper, analysis))
-
-            # 5. Overall verdict
             yield _sse("progress", {"message": "Synthesizing verdict…", "step": 4, "total": 4})
             overall = analyzer.overall_verdict(req.claim, results)
             yield _sse("verdict", {"data": overall})
             yield _sse("done", {})
-
         except Exception as exc:
             logger.exception("verify_claim error")
             yield _sse("error", {"message": str(exc)})
             yield _sse("done", {})
-
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/review")
 def literature_review(req: TopicRequest):
-    """
-    SSE stream: generate a structured literature review on a topic.
-    Events: progress | papers | analysis | review | done | error
-    """
     def generate():
         try:
             yield _sse("progress", {"message": "Generating search queries…", "step": 1, "total": 3})
             queries = analyzer.transform_query(req.topic)
-
             yield _sse("progress", {"message": "Searching literature…", "step": 2, "total": 3})
             papers = _fetch_papers(queries, req.max_papers, req.year_filter)
             if not papers:
@@ -165,7 +150,6 @@ def literature_review(req: TopicRequest):
                 yield _sse("done", {})
                 return
             yield _sse("papers", {"data": papers})
-
             results = []
             for i, paper in enumerate(papers):
                 pid      = paper.get("paperId", "")
@@ -173,37 +157,26 @@ def literature_review(req: TopicRequest):
                 analysis = cached if cached else analyzer.analyze_paper(paper, req.topic)
                 if not cached and pid:
                     cache.set_analysis(pid, req.topic, analysis)
-                yield _sse("analysis", {
-                    "index": i, "total": len(papers),
-                    "paper_id": pid, "analysis": analysis,
-                })
+                yield _sse("analysis", {"index": i, "total": len(papers), "paper_id": pid, "analysis": analysis})
                 results.append((paper, analysis))
-
             yield _sse("progress", {"message": "Writing literature review…", "step": 3, "total": 3})
             review = analyzer.literature_review(req.topic, results)
             yield _sse("review", {"data": review})
             yield _sse("done", {})
-
         except Exception as exc:
             logger.exception("literature_review error")
             yield _sse("error", {"message": str(exc)})
             yield _sse("done", {})
-
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/search")
 def search_papers(req: TopicRequest):
-    """
-    SSE stream: search papers by topic (for the summarizer view).
-    Events: progress | papers | done | error
-    """
     def generate():
         try:
             yield _sse("progress", {"message": "Generating search queries…"})
             queries = analyzer.transform_query(req.topic)
-
             yield _sse("progress", {"message": "Searching…"})
             papers = _fetch_papers(queries, req.max_papers, req.year_filter)
             if not papers:
@@ -212,28 +185,30 @@ def search_papers(req: TopicRequest):
                 return
             yield _sse("papers", {"data": papers})
             yield _sse("done", {})
-
         except Exception as exc:
             logger.exception("search_papers error")
             yield _sse("error", {"message": str(exc)})
             yield _sse("done", {})
-
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
 @app.post("/api/summarize")
-def summarize_paper(req: SummarizeRequest):
-    """Summarize a single paper (non-streaming, fast)."""
-    paper  = req.paper
-    pid    = paper.get("paperId", "")
-    cached = cache.get_summary(pid) if pid else None
-    if cached:
-        return {"summary": cached}
-    summary = analyzer.summarize(paper)
-    if pid:
-        cache.set_summary(pid, summary)
-    return {"summary": summary}
+async def summarize_paper(req: SummarizeRequest):
+    """Summarize a single paper — never returns 500."""
+    try:
+        paper   = req.paper
+        pid     = paper.get("paperId", "")
+        cached  = cache.get_summary(pid) if pid else None
+        if cached:
+            return {"summary": cached}
+        summary = analyzer.summarize(paper)
+        if pid:
+            cache.set_summary(pid, summary)
+        return {"summary": summary}
+    except Exception as exc:
+        logger.exception("summarize_paper error")
+        return JSONResponse(status_code=200, content={"summary": f"Summarization temporarily unavailable: {exc}"})
 
 
 @app.delete("/api/cache")
