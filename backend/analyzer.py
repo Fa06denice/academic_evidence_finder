@@ -9,8 +9,123 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  PROMPTS — V4 (11 logic traps + JSON coherence rule)
+#  PROMPTS — V5 (2-pass chain-of-thought architecture)
 # ═══════════════════════════════════════════════════════════════════════════════
+
+# ---------------------------------------------------------------------------
+# PASS 1 — Factual extraction (no judgment)
+# Goal : lock down WHAT the paper says before any claim comparison.
+# ~350 tokens of instructions. Short, focused, no examples needed.
+# ---------------------------------------------------------------------------
+_PAPER_EXTRACT = """\
+You are a scientific fact extractor. Read the abstract below and return a \
+JSON object with four fields. Do NOT evaluate any claim. Do NOT express any opinion. \
+Only report what the abstract explicitly states.
+
+PAPER:
+  Title:    {title}
+  Year:     {year}
+  Authors:  {authors}
+  Abstract: {abstract}
+  TL;DR:    {tldr}
+
+Required JSON fields:
+
+  "main_finding" : The single most important empirical result of this paper, \
+in one sentence. Quote verbatim if possible, otherwise paraphrase tightly. \
+Do NOT include author opinions or implications — only the measured result.
+
+  "direction"    : The comparative direction the data shows. Choose exactly one:
+    "A_beats_B"    → the paper’s primary subject outperforms the comparison.
+    "B_beats_A"    → the comparison outperforms the primary subject.
+    "no_difference"→ the paper shows no significant difference, no speedup,
+                      no advantage, comparable results, or failed to find an effect.
+    "no_comparison"→ the paper does not directly compare two systems/groups.
+
+  "conditions"   : Any scope limitations on the result (specific task, hardware,
+ population, circuit type, time window, dose). Write "none" if the result is general.
+
+  "evidence_quote": The single most informative sentence from the abstract \
+that best supports the main_finding. Copy verbatim.
+
+Return ONLY a raw JSON object. No markdown, no code fences, no extra text.
+"""
+
+# ---------------------------------------------------------------------------
+# PASS 2 — Verdict (judgment only, extraction already done)
+# Goal : compare the locked finding against the claim. Short, sharp rules.
+# ~400 tokens of instructions.
+# ---------------------------------------------------------------------------
+_PAPER_VERDICT = """\
+You are an academic evidence analyst. A factual extraction has already been done \
+for a scientific paper. Your only job is to decide whether that finding \
+SUPPORTS, CONTRADICTS, or is UNRELATED to the claim below.
+
+CLAIM: {claim}
+
+EXTRACTED FINDING:
+  main_finding   : {main_finding}
+  direction      : {direction}
+  conditions     : {conditions}
+  evidence_quote : {evidence_quote}
+
+━━━ DECISION RULES ━━━
+
+First, identify the claim’s direction:
+  Subject A = the entity the claim favours.
+  Object  B = the entity the claim says is worse/less/ineffective.
+  Direction = A > B, A causes B, A prevents B, etc.
+
+Then apply these rules IN ORDER — stop at the first that matches:
+
+1. OFF-TOPIC
+   The paper does not study the same phenomenon as the claim.
+   → NEUTRAL, relevance_score ≤ 2.
+
+2. NO ADVANTAGE FOR B (direction = "no_difference" or "no_comparison" without B winning)
+   The paper failed to show B outperforms A, or found no significant difference.
+   When claim says A > B:
+   → SUPPORTS if no conditions, or PARTIALLY_SUPPORTS if narrow conditions.
+   CRITICAL: This is NOT CONTRADICTS. Absence of B’s advantage = support for A’s claim.
+
+3. B GENUINELY BEATS A (direction = "B_beats_A")
+   The paper’s data shows B > A.
+   When claim says A > B:
+   → CONTRADICTS if same general context.
+   → PARTIALLY_SUPPORTS if conditions are very narrow (single task type, specific hardware,
+     limited population) and the claim is general.
+
+4. A GENUINELY BEATS B (direction = "A_beats_B")
+   When claim says A > B:
+   → SUPPORTS if no major conditions, PARTIALLY_SUPPORTS if narrow conditions.
+
+5. NO COMPARISON / INDIRECT
+   Paper discusses the topic but makes no direct A vs B comparison.
+   → NEUTRAL.
+
+CONFIDENCE:
+  HIGH   → finding directly and unambiguously addresses the claim, same context.
+  MEDIUM → finding is indirect, conditional, or partially relevant.
+  LOW    → weak link, very narrow scope, or finding is speculative.
+
+COHERENCE CHECK (before writing JSON):
+  Re-read your explanation. Your "verdict" field MUST match what your
+  explanation concludes. Fix the verdict if there is any conflict.
+
+━━━ OUTPUT ━━━
+
+Return ONLY a raw JSON object. No markdown. No code fences.
+Required keys:
+  "verdict"        : SUPPORTS | PARTIALLY_SUPPORTS | CONTRADICTS | NEUTRAL | INSUFFICIENT_DATA
+  "confidence"     : HIGH | MEDIUM | LOW
+  "relevance_score": integer 0-10
+  "explanation"    : 2 sentences — (1) state the paper’s direction explicitly,
+                     (2) explain whether that matches or opposes the claim direction.
+"""
+
+# ---------------------------------------------------------------------------
+# Other prompts (unchanged from V4)
+# ---------------------------------------------------------------------------
 
 _QUERY_TRANSFORM = """\
 You are a senior academic librarian with expertise in systematic literature search.
@@ -32,236 +147,12 @@ HARD RULES:
 - All queries must be meaningfully different from each other.
 - If the claim contains a comparison (e.g. "no more than", "better than", "compared to",
   "versus"), ALWAYS include the comparator explicitly in at least one query.
-  Example: "SSRIs no more effective than placebo for mild depression"
-  → must produce a query like "SSRI placebo mild depression meta-analysis"
-  → and another like "antidepressant efficacy mild depression randomized trial"
-- If the claim is a comparative (A vs B), generate queries for BOTH sides of the comparison
-  so that papers supporting either direction are retrieved.
+- If the claim is a comparative (A vs B), generate queries for BOTH sides.
   Example: "Quantum computing outperforms classical computing"
   → "quantum advantage classical simulation comparison"
   → "classical algorithms competitive quantum circuits benchmark"
 
 Return ONLY a valid JSON array of exactly {n_queries} strings.
-"""
-
-_PAPER_ANALYSIS = """\
-You are a rigorous academic evidence analyst. Your task is to assess whether a \
-scientific paper SUPPORTS, CONTRADICTS, or is UNRELATED to a specific claim.
-
-CLAIM: {claim}
-
-PAPER:
-  Title:    {title}
-  Year:     {year}
-  Authors:  {authors}
-  Abstract: {abstract}
-  TL;DR:    {tldr}
-
-━━━ STEP 1 — MANDATORY PRE-ANALYSIS ━━━
-
-Before picking any verdict, answer these four questions explicitly in your reasoning:
-
-  A. CLAIM DIRECTION
-     What exactly does the claim assert?
-     → Identify Subject (A), Object (B), and the direction: A > B? A causes B? A prevents B?
-     → Example: "Traditional CS is more efficient than Quantum CS"
-       Subject=Traditional CS, Object=Quantum CS, Direction=Traditional > Quantum
-
-  B. PAPER FINDING
-     What does THIS paper actually show in its data/results?
-     → Quote or tightly paraphrase the key result sentence.
-     → Do NOT infer from the title or topic — only from stated findings.
-     → Ignore which side the authors favor; focus on what the data shows.
-
-  C. DIRECTION MATCH
-     Does the paper's finding go in the SAME direction as the claim, or the OPPOSITE direction?
-     → Same direction (A > B and paper shows A > B) → leans SUPPORTS
-     → Opposite direction (A > B but paper shows B > A) → leans CONTRADICTS
-     → No quantified direction found → leans NEUTRAL
-
-  D. TRAP CHECK — run through ALL of these before finalising:
-
-     □ Negation trap:
-       Does the paper use "no effect", "did not", "failed to", "no association"?
-       If yes AND the claim asserts a positive effect → likely CONTRADICTS.
-
-     □ Absence-of-advantage trap (NEW — critical for comparative claims):
-       Does the paper say "no [B] advantage was found", "no speedup for [B]",
-       "[B] did not outperform [A]", "results are comparable", "no significant difference"?
-       If yes AND the claim says "A > B" → the paper is showing A ≥ B → SUPPORTS or PARTIALLY_SUPPORTS.
-       NEVER classify as CONTRADICTS when the paper fails to confirm B's superiority.
-       Example: claim="Traditional CS > Quantum CS", paper="no quantum speedup detected"
-       → Quantum not shown better than classical → SUPPORTS the pro-classical claim.
-
-     □ Scope trap:
-       Is the result conditional (subgroup, dose, circuit type, narrow task)?
-       If yes AND the claim is general → cap at PARTIALLY_SUPPORTS.
-
-     □ Correlation trap:
-       Does the paper show correlation/association but the claim asserts causation?
-       If yes → cap at PARTIALLY_SUPPORTS.
-
-     □ Model trap:
-       Is the evidence from animals, cell cultures, or in vitro only?
-       If yes AND claim is about humans → cap at PARTIALLY_SUPPORTS LOW.
-
-     □ Population trap:
-       Does the paper study a DIFFERENT population than the claim specifies?
-       If yes → cap at PARTIALLY_SUPPORTS (never CONTRADICTS across a population gap).
-
-     □ Magnitude trap:
-       Does the paper show an effect of a DIFFERENT size than the claim states?
-       If yes (e.g. claim says 50%, paper shows 5%) → CONTRADICTS or PARTIALLY_SUPPORTS.
-
-     □ Timeframe trap:
-       Is the paper's effect short-term only but the claim is general/durable?
-       If yes → PARTIALLY_SUPPORTS at most.
-
-     □ Reverse causality trap:
-       Does the paper show Y predicts X but the claim says X causes Y?
-       If yes → NEUTRAL or PARTIALLY_SUPPORTS.
-
-     □ Title/topic trap:
-       Never infer verdict from title or topic alone — only from stated findings.
-
-━━━ STEP 2 — RELEVANCE CHECK ━━━
-
-Does this paper study the same population, intervention, condition, or phenomenon \
-as the claim? If completely off-topic, assign NEUTRAL with relevance_score ≤ 2.
-
-━━━ STEP 3 — VERDICT ━━━
-
-Choose the SINGLE most accurate verdict. Do NOT default to safe options.
-
-  SUPPORTS
-    → The paper's findings EXPLICITLY confirm the claim IN THE SAME DIRECTION,
-      same population, same context. No major caveats.
-    → Includes: paper shows A ≥ B when claim says A > B (classical holds ground).
-    → Includes: paper shows B has NO advantage when claim says A > B.
-
-  PARTIALLY_SUPPORTS
-    → Related evidence that lends credibility to the claim, but with caveats:
-      different population/subgroup, indirect measure, animal/in vitro model, correlation
-      not causation, short-term only, conditional effect, or magnitude mismatch.
-
-  CONTRADICTS
-    → The paper's findings EXPLICITLY show the OPPOSITE of the claim in the same context.
-    → "A > B" claim + paper shows B > A (B genuinely outperforms A) → CONTRADICTS.
-    → NOT CONTRADICTS when the paper merely fails to confirm B's advantage over A.
-    → If populations differ significantly → use PARTIALLY_SUPPORTS instead.
-
-  NEUTRAL
-    → Same broad topic but the paper does not directly test the claim's assertion.
-      It discusses context, methods, policy, or tangential factors without quantifying
-      the direction asserted by the claim.
-
-  INSUFFICIENT_DATA
-    → LAST RESORT ONLY. Use ONLY when the abstract has fewer than 60 words OR is
-      completely unreadable. NEVER use as a safe default when a verdict is possible.
-
-━━━ WORKED EXAMPLES (study every one carefully) ━━━
-
-EXAMPLE 1 — Direction inversion (most common mistake):
-  Claim: "Traditional CS is more efficient than Quantum CS"
-  Paper: "Classical simulation on a laptop matches the quantum processor output in 2 seconds"
-  → Paper shows Classical ≥ Quantum → SAME direction as claim → SUPPORTS
-  ✗ Wrong: CONTRADICTS
-
-EXAMPLE 2 — Quantum genuinely wins:
-  Claim: "Traditional CS is more efficient than Quantum CS"
-  Paper: "Zuchongzhi completed a task in 200s that would take classical computers 5.9 billion years"
-  → Paper shows Quantum >> Classical → OPPOSITE direction → CONTRADICTS
-  ✓ Correct: CONTRADICTS
-
-EXAMPLE 3 — Absence-of-advantage trap (KEY):
-  Claim: "Traditional CS is more efficient than Quantum CS"
-  Paper: "No conclusive quantum speedup was detected over classical hardware in these tests"
-  → Quantum NOT shown to beat classical → Classical holds its ground → SUPPORTS
-  ✗ Wrong: CONTRADICTS (absence of quantum win ≠ classical loss)
-
-EXAMPLE 4 — Absence-of-advantage, different framing:
-  Claim: "Traditional CS is more efficient than Quantum CS"
-  Paper: "The quantum annealer failed to demonstrate an advantage over classical algorithms"
-  → Classical ≥ Quantum → SUPPORTS
-  ✗ Wrong: CONTRADICTS
-
-EXAMPLE 5 — Negation trap (different domain):
-  Claim: "SSRIs improve depression symptoms"
-  Paper: "SSRIs showed no significant improvement over placebo in this RCT"
-  → "no improvement" = opposite of claim → CONTRADICTS (same population)
-  ✗ Wrong: NEUTRAL
-
-EXAMPLE 6 — Scope trap:
-  Claim: "Quantum computing outperforms classical computing"
-  Paper: "Quantum advantage observed only on random circuit sampling tasks of >50 qubits"
-  → Conditional narrow result, claim is general → PARTIALLY_SUPPORTS
-  ✗ Wrong: SUPPORTS
-
-EXAMPLE 7 — Correlation ≠ Causation:
-  Claim: "Social media use causes depression in teenagers"
-  Paper: "Social media use was associated with depressive symptoms (r=0.3, p<0.01)"
-  → Association ≠ causation → PARTIALLY_SUPPORTS
-  ✗ Wrong: SUPPORTS
-
-EXAMPLE 8 — Animal/in vitro model trap:
-  Claim: "Compound X treats Alzheimer's disease"
-  Paper: "In mice, Compound X reduced amyloid plaques by 40%"
-  → Mouse model only → PARTIALLY_SUPPORTS LOW
-  ✗ Wrong: SUPPORTS
-
-EXAMPLE 9 — Population mismatch:
-  Claim: "Vitamin D reduces depression in healthy adults"
-  Paper: "In type 2 diabetics, Vitamin D supplementation improved mood scores"
-  → Different population → PARTIALLY_SUPPORTS MEDIUM
-  ✗ Wrong: CONTRADICTS
-
-EXAMPLE 10 — Magnitude trap:
-  Claim: "Drug X reduces blood pressure by 30%"
-  Paper: "Drug X reduced systolic BP by ~3%"
-  → Effect confirmed but magnitude far smaller → CONTRADICTS or PARTIALLY_SUPPORTS
-  ✗ Wrong: SUPPORTS
-
-EXAMPLE 11 — Timeframe trap:
-  Claim: "Mindfulness durably reduces anxiety"
-  Paper: "Mindfulness reduced anxiety at 2-week follow-up; no 6-month assessment"
-  → Short-term only, durability unestablished → PARTIALLY_SUPPORTS
-  ✗ Wrong: SUPPORTS
-
-EXAMPLE 12 — Reverse causality:
-  Claim: "Sleep deprivation causes cognitive decline"
-  Paper: "Patients with early cognitive decline were observed to sleep fewer hours"
-  → Reverse direction → NEUTRAL or PARTIALLY_SUPPORTS
-  ✗ Wrong: SUPPORTS
-
-━━━ CONFIDENCE ━━━
-
-  HIGH   → Abstract directly and explicitly addresses the claim in the same direction,
-            same population. Verdict is unambiguous.
-  MEDIUM → Indirect evidence, different (but related) population, conditional findings,
-            or requires some interpretation.
-  LOW    → Weak link, speculative, very different population, or abstract is very short.
-
-━━━ COHERENCE RULE (mandatory before writing JSON) ━━━
-
-Before writing the JSON, re-read your explanation. Ask yourself:
-  "Does my explanation say this paper SUPPORTS or CONTRADICTS the claim?"
-Your "verdict" field MUST match what your explanation concludes.
-If your explanation says "this aligns with the claim" → verdict must be SUPPORTS or PARTIALLY_SUPPORTS.
-If your explanation says "this opposes the claim" → verdict must be CONTRADICTS.
-NEVER write a verdict that contradicts your own explanation. If there is a conflict, fix the verdict.
-
-━━━ OUTPUT ━━━
-
-Return ONLY a raw JSON object. No markdown. No code fences. No text outside the JSON.
-Required keys:
-  "verdict"        : one of SUPPORTS | PARTIALLY_SUPPORTS | CONTRADICTS | NEUTRAL | INSUFFICIENT_DATA
-  "confidence"     : one of HIGH | MEDIUM | LOW
-  "relevance_score": integer 0-10
-  "evidence"       : exact quote or tight paraphrase from the abstract (max 2 sentences)
-  "explanation"    : 2 sentences — (1) state the paper's finding direction explicitly,
-                     (2) explain whether that direction matches or opposes the claim direction.
-                     Your verdict MUST match what this explanation concludes.
-  "key_finding"    : the single most important result of the paper in one sentence
 """
 
 _OVERALL_VERDICT = """\
@@ -273,69 +164,44 @@ CLAIM: {claim}
 INDIVIDUAL PAPER ANALYSES:
 {analyses_text}
 
-━━━ YOUR TASK ━━━
+━━━ TASK ━━━
 
-Think step by step before concluding:
+1. CLAIM DIRECTION: identify Subject A, Object B, and direction (A > B? A causes B?).
 
-1. CLAIM DIRECTION — identify what the claim asserts:
-   Subject, object, and direction (A > B? A causes B? A prevents B?).
-   This is your reference frame for the entire synthesis.
+2. CONSISTENCY CHECK — for each paper, verify verdict matches its explanation:
+   - explanation says "no B advantage" + claim is "A > B" → should be SUPPORTS, not CONTRADICTS.
+   - explanation says "B beats A" + claim is "A > B" → should be CONTRADICTS, not SUPPORTS.
+   - Fix mislabelled verdicts before counting.
 
-2. CONSISTENCY CHECK — for EACH paper, verify its verdict is coherent with its
-   key_finding and explanation before counting it:
+3. Count by CORRECTED verdict:
+   Supporting   = SUPPORTS + PARTIALLY_SUPPORTS
+   Contradicting= CONTRADICTS
+   Neutral      = NEUTRAL + INSUFFICIENT_DATA
 
-   a) Read the "explanation" field. What direction does it describe?
-   b) If the explanation says "classical holds its ground / no quantum speedup found"
-      but the verdict is CONTRADICTS for a "Classical > Quantum" claim
-      → mislabelled: treat as SUPPORTS.
-   c) If the explanation says "quantum outperforms classical" but the verdict is SUPPORTS
-      for a "Classical > Quantum" claim
-      → mislabelled: treat as CONTRADICTS.
-   d) The absence of B's advantage over A ("no speedup for B", "no significant difference")
-      SUPPORTS an "A > B" claim — it does NOT contradict it.
-   e) Apply equivalent logic for any claim direction.
+4. Weigh quality: HIGH confidence > LOW; high relevance_score counts more.
+   One strong direct CONTRADICTS can outweigh several weak PARTIALLY_SUPPORTS.
 
-3. Count papers by CORRECTED verdict:
-   - Supporting (SUPPORTS + PARTIALLY_SUPPORTS): how many?
-   - Contradicting (CONTRADICTS): how many?
-   - Neutral/Unclear (NEUTRAL + INSUFFICIENT_DATA): how many?
+5. Verdict rules (apply in order):
+   SUPPORTED            → clear majority confirm claim, direct evidence, same context.
+   PARTIALLY_SUPPORTED  → more support than contradiction but with caveats or scope limits.
+   CONTRADICTED         → majority or key high-quality papers oppose the claim.
+   MIXED                → roughly equal on both sides — genuine scientific debate.
+   INSUFFICIENT_EVIDENCE→ LAST RESORT: fewer than 2 papers have a concrete verdict.
 
-4. Weigh evidence quality:
-   - HIGH confidence papers count more than LOW confidence.
-   - High relevance_score papers count more.
-   - One strong contradicting paper can outweigh several weak supports.
-   - PARTIALLY_SUPPORTS from different populations carry less weight.
-
-5. Apply verdict rules in order:
-   SUPPORTED            → Clear majority of relevant papers confirm the claim in the SAME
-                          direction. Evidence is direct and from the same population.
-   PARTIALLY_SUPPORTED  → More support than contradiction but with caveats, population
-                          differences, or limited scope. Prefer this over SUPPORTED when
-                          uncertain.
-   CONTRADICTED         → Majority of relevant papers show the OPPOSITE of the claim,
-                          or key high-quality papers directly refute it in the same context.
-   MIXED                → Roughly equal evidence on both sides — genuine scientific debate.
-   INSUFFICIENT_EVIDENCE→ LAST RESORT. Use ONLY if fewer than 2 papers have a concrete
-                          verdict. NEUTRAL papers do NOT count as evidence.
-
-6. Note in verdict_explanation when relevant papers are a small fraction of total.
-7. Translate non-English claims before evaluating.
-8. Specific numbers/dosages not confirmed by any paper → CONTRADICTED or PARTIALLY_SUPPORTED.
-
-9. Overall confidence:
-   HIGH   → Multiple HIGH-confidence direct papers agree; little contradiction.
-   MEDIUM → Mostly indirect, mixed quality, or partially-relevant populations.
-   LOW    → Very few relevant papers, most NEUTRAL/INSUFFICIENT, or highly mixed.
+6. Overall confidence:
+   HIGH   → multiple HIGH papers agree, little contradiction.
+   MEDIUM → mostly indirect or partially relevant.
+   LOW    → very few relevant papers or highly mixed.
 
 ━━━ OUTPUT ━━━
 
 Return ONLY a raw JSON object. No markdown. No code fences.
 Required keys:
-  "overall_verdict"     : one of SUPPORTED | PARTIALLY_SUPPORTED | CONTRADICTED | MIXED | INSUFFICIENT_EVIDENCE
-  "overall_confidence"  : one of HIGH | MEDIUM | LOW
-  "verdict_explanation" : 3 sentences — synthesize the evidence, cite 2-3 paper titles by name
-  "supporting_count"    : integer (after consistency corrections)
-  "contradicting_count" : integer (after consistency corrections)
+  "overall_verdict"     : SUPPORTED | PARTIALLY_SUPPORTED | CONTRADICTED | MIXED | INSUFFICIENT_EVIDENCE
+  "overall_confidence"  : HIGH | MEDIUM | LOW
+  "verdict_explanation" : 3 sentences — synthesize evidence, cite 2-3 paper titles by name
+  "supporting_count"    : integer (after corrections)
+  "contradicting_count" : integer (after corrections)
   "neutral_count"       : integer
 """
 
@@ -349,35 +215,31 @@ TOPIC: {topic}
 PAPERS:
 {papers_text}
 
-━━━ STRUCTURE (follow exactly) ━━━
+━━━ STRUCTURE ━━━
 
 **1. Introduction** (1 paragraph)
-Introduce the research area, explain why it is scientifically and/or clinically \
-important, and state the scope of this review.
+Introduce the research area, explain why it matters, state the scope.
 
 **2. Main Findings** (2-3 paragraphs)
-Group papers thematically. Highlight points of consensus and disagreement. \
-For each key claim, cite the relevant papers. Note sample sizes or effect sizes if mentioned.
+Group papers thematically. Highlight consensus and disagreement.
+Cite relevant papers. Note sample sizes or effect sizes if mentioned.
 
 **3. Methodological Considerations** (1 paragraph)
-Discuss study designs used (RCT, observational, meta-analysis, etc.), \
-populations studied, and key limitations mentioned by the authors.
+Study designs, populations, key limitations.
 
 **4. State of Evidence & Open Questions** (1 paragraph)
-Summarize the overall strength of evidence. Identify gaps, contradictions, \
-and the most important unanswered questions for future research.
+Overall evidence strength, gaps, and most important unanswered questions.
 
-━━━ STYLE RULES ━━━
+━━━ STYLE ━━━
 - Cite as [First Author et al., Year] inline.
-- Formal academic register. No bullet points in the review body.
-- Every sentence must add information — no padding.
+- Formal academic register. No bullet points.
 - Minimum 400 words.
 """
 
 _SUMMARIZE = """\
 You are an expert academic research assistant. Produce a thorough, structured summary \
 of the paper below, based STRICTLY on the provided abstract. \
-Do NOT add external knowledge or invent details not present in the abstract.
+Do NOT add external knowledge or invent details.
 
 Title:    {title}
 Year:     {year}
@@ -386,29 +248,19 @@ Abstract: {abstract}
 
 ━━━ REQUIRED STRUCTURE ━━━
 
-**🎯 Objective**
-What specific question or hypothesis does this study address? \
-What gap in the literature does it aim to fill?
+**🎯 Objective** — What question does this study address? What gap does it fill?
 
-**🔬 Methodology**
-Study design (RCT, cohort, meta-analysis, etc.), population or sample, \
-intervention or exposure, and outcome measures. Include numbers if stated.
+**🔬 Methodology** — Study design, population, intervention, outcome measures. Include numbers.
 
-**📊 Key Findings**
-The main results. Quote exact numbers, percentages, p-values, or effect sizes \
-if present in the abstract. What did the authors conclude?
+**📊 Key Findings** — Main results with exact numbers, p-values, effect sizes if present.
 
-**⚠️ Limitations**
-Any limitations explicitly mentioned in the abstract. \
-If none are stated: write "Not reported in abstract."
+**⚠️ Limitations** — Explicitly mentioned limitations, or "Not reported in abstract."
 
-**💡 Why It Matters**
-Scientific significance, practical implications, and who should care about these results.
+**💡 Why It Matters** — Scientific significance and practical implications.
 
 ━━━ RULES ━━━
 - Stay strictly within what the abstract says.
 - Never use vague phrases like "the study found interesting results."
-- If the abstract is short, extract maximum value from what is there.
 """
 
 _TOPIC_QUERIES = """\
@@ -418,19 +270,15 @@ Your task: generate {n_queries} DISTINCT, high-yield Semantic Scholar search que
 TOPIC: {topic}
 
 STRATEGY:
-- Query 1: the core concept and main keywords (most specific to the topic).
-- Query 2: a specific subtopic, mechanism, or clinical application directly within this field.
-- Query 3: the broader scientific or clinical context — still within the field, not adjacent.
-- Query 4+ (if requested): alternative angles, specific populations, or methodological variations
-  that would surface papers from a different research community on the SAME topic.
+- Query 1: core concept and main keywords (most specific).
+- Query 2: specific subtopic, mechanism, or clinical application.
+- Query 3: broader scientific or clinical context — still within the field.
+- Query 4+: alternative angles, populations, or methodological variations.
 
 RULES:
-- All queries in English. 3 to 7 keywords each. No stopwords.
+- English only. 3–7 keywords each. No stopwords.
 - Queries must be meaningfully different from each other.
-- Every query must remain TIGHTLY scoped to the topic. Do NOT drift into adjacent fields.
-  Example for "Large language models clinical decision support":
-  GOOD: "LLM clinical decision support accuracy", "GPT medical diagnosis benchmark"
-  BAD:  "AI ethics higher education", "machine learning genomics" (too distant)
+- Stay TIGHTLY scoped to the topic. No adjacent fields.
 
 Return ONLY a valid JSON array of exactly {n_queries} strings.
 """
@@ -478,7 +326,7 @@ def _extract_content(resp) -> Optional[str]:
             return first.get("message", {}).get("content")
     except Exception:
         pass
-    logger.error("_extract_content FAILED — raw: %s", str(resp)[:300])
+    logger.warning("_extract_content returned None — resp type: %s, raw: %s", type(resp).__name__, str(resp)[:400])
     return None
 
 _VERB_RE = re.compile(
@@ -550,6 +398,7 @@ class PaperAnalyzer:
     VALID_VERDICTS = {"SUPPORTS", "PARTIALLY_SUPPORTS", "CONTRADICTS", "NEUTRAL", "INSUFFICIENT_DATA"}
     VALID_OVERALL  = {"SUPPORTED", "PARTIALLY_SUPPORTED", "CONTRADICTED", "MIXED", "INSUFFICIENT_EVIDENCE"}
     VALID_CONF     = {"HIGH", "MEDIUM", "LOW"}
+    VALID_DIRECTIONS = {"A_beats_B", "B_beats_A", "no_difference", "no_comparison"}
 
     def __init__(self, api_key: str, provider: str = "groq", model: str = None, extra_keys: list = None):
         cfg        = self.PROVIDERS.get(provider, self.PROVIDERS["groq"])
@@ -612,6 +461,7 @@ class PaperAnalyzer:
                 if content:
                     self.rotator.success()
                     return content.strip()
+                logger.warning("Empty content from %s — rotating.", label)
                 self.rotator.rotate()
             except Exception as e:
                 err     = str(e)
@@ -634,9 +484,9 @@ class PaperAnalyzer:
             "verdict":         d.get("verdict",       "INSUFFICIENT_DATA") if d.get("verdict")   in self.VALID_VERDICTS else "INSUFFICIENT_DATA",
             "confidence":      d.get("confidence",    "LOW")               if d.get("confidence") in self.VALID_CONF     else "LOW",
             "relevance_score": _safe_int(d.get("relevance_score"), 0),
-            "evidence":        str(d.get("evidence")    or "No evidence found."),
+            "evidence":        str(d.get("evidence")    or d.get("evidence_quote") or "No evidence found."),
             "explanation":     str(d.get("explanation") or ""),
-            "key_finding":     str(d.get("key_finding") or "N/A"),
+            "key_finding":     str(d.get("key_finding") or d.get("main_finding") or "N/A"),
         }
 
     def _norm_overall(self, d: dict) -> dict:
@@ -669,27 +519,73 @@ class PaperAnalyzer:
         return [user_input]
 
     def analyze_paper(self, paper: dict, claim: str) -> dict:
+        """2-pass chain-of-thought: extract finding first, then judge against claim."""
         abstract = (paper.get("abstract") or "").strip()
         if len(abstract) < 80:
             return self._norm_analysis({
                 "verdict": "INSUFFICIENT_DATA", "confidence": "LOW", "relevance_score": 0,
                 "evidence": "Abstract too short or unavailable.",
-                "explanation": "Not enough content to evaluate this paper.", "key_finding": "N/A",
+                "explanation": "Not enough content to evaluate this paper.",
+                "key_finding": "N/A",
             })
+
         tldr_obj  = paper.get("tldr") or {}
         tldr_text = tldr_obj.get("text", "Not available") if isinstance(tldr_obj, dict) else "Not available"
-        prompt = _PAPER_ANALYSIS.format(
-            claim=claim,
-            title=paper.get("title", "Unknown"),
-            year=paper.get("year", "Unknown"),
-            authors=_author_str(paper),
-            abstract=abstract[:3000],
-            tldr=tldr_text,
+        common = dict(
+            title   = paper.get("title", "Unknown"),
+            year    = paper.get("year", "Unknown"),
+            authors = _author_str(paper),
+            abstract= abstract[:2500],
+            tldr    = tldr_text,
         )
-        fallback = {"verdict": "INSUFFICIENT_DATA", "confidence": "LOW", "relevance_score": 1,
-                    "evidence": "Analysis could not be completed.",
-                    "explanation": "LLM analysis failed.", "key_finding": "N/A"}
-        return self._norm_analysis(self._parse(self._llm(prompt, temperature=0.1), fallback))
+
+        extract_fallback = {
+            "main_finding":   "Could not extract finding.",
+            "direction":      "no_comparison",
+            "conditions":     "unknown",
+            "evidence_quote": "",
+        }
+        verdict_fallback = {
+            "verdict": "INSUFFICIENT_DATA", "confidence": "LOW",
+            "relevance_score": 1, "explanation": "LLM analysis failed.",
+        }
+
+        # --- Pass 1: factual extraction ---
+        try:
+            raw1       = self._llm(_PAPER_EXTRACT.format(**common), temperature=0.1, max_tokens=400)
+            extraction = self._parse(raw1, extract_fallback)
+        except Exception as exc:
+            logger.error("Pass 1 failed for '%s': %s", common["title"], exc)
+            extraction = extract_fallback
+
+        # Sanitise direction field
+        if extraction.get("direction") not in self.VALID_DIRECTIONS:
+            extraction["direction"] = "no_comparison"
+
+        # --- Pass 2: verdict ---
+        try:
+            raw2   = self._llm(
+                _PAPER_VERDICT.format(
+                    claim         = claim,
+                    main_finding  = extraction.get("main_finding",   "N/A"),
+                    direction     = extraction.get("direction",       "no_comparison"),
+                    conditions    = extraction.get("conditions",      "none"),
+                    evidence_quote= extraction.get("evidence_quote",  ""),
+                ),
+                temperature=0.1, max_tokens=500,
+            )
+            verdict_data = self._parse(raw2, verdict_fallback)
+        except Exception as exc:
+            logger.error("Pass 2 failed for '%s': %s", common["title"], exc)
+            verdict_data = verdict_fallback
+
+        # Merge extraction fields into final result for display
+        merged = {
+            **verdict_data,
+            "evidence":    extraction.get("evidence_quote") or "No evidence found.",
+            "key_finding": extraction.get("main_finding")   or "N/A",
+        }
+        return self._norm_analysis(merged)
 
     def overall_verdict(self, claim: str, results: List[Tuple[dict, dict]]) -> dict:
         if not results:
@@ -742,10 +638,10 @@ class PaperAnalyzer:
         try:
             return self._llm(
                 _SUMMARIZE.format(
-                    title=paper.get("title", "Unknown"),
-                    year=paper.get("year", "N/A"),
-                    authors=_author_str(paper, max_authors=5),
-                    abstract=abstract[:3000],
+                    title   = paper.get("title", "Unknown"),
+                    year    = paper.get("year", "N/A"),
+                    authors = _author_str(paper, max_authors=5),
+                    abstract= abstract[:3000],
                 ),
                 temperature=0.2, max_tokens=900,
             )
