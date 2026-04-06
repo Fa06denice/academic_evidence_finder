@@ -34,7 +34,7 @@
             class="px-2 py-1.5 rounded text-xs text-muted hover:text-white hover:bg-surface2 cursor-pointer truncate transition-colors"
             @click="reuseHistory(item)"
             :title="item.query">
-            <span class="mr-1.5 opacity-60">{{ item.type === 'verify' ? '🧪' : item.type === 'review' ? '📚' : '🔍' }}</span>
+            <span class="mr-1.5 opacity-60">{{ item.type === 'verify' ? '🧪' : item.type === 'review' ? '📚' : item.type === 'chat' ? '💬' : '🔍' }}</span>
             {{ item.query }}
           </div>
         </div>
@@ -66,9 +66,10 @@ const router = useRouter()
 const route  = useRoute()
 
 const nav = [
-  { to: '/',       icon: '🧪', label: 'Claim Verifier' },
-  { to: '/review', icon: '📚', label: 'Literature Review' },
-  { to: '/search', icon: '🔍', label: 'Paper Search' },
+  { to: '/',       icon: '🧪', label: 'Claim Verifier'     },
+  { to: '/review', icon: '📚', label: 'Literature Review'  },
+  { to: '/search', icon: '🔍', label: 'Paper Search'       },
+  { to: '/chat',   icon: '💬', label: 'Paper Chat'         },
 ]
 
 function reuseHistory(item) {
