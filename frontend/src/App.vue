@@ -1,6 +1,9 @@
 <template>
   <div class="flex min-h-screen bg-bg">
 
+    <!-- Onboarding modal -->
+    <OnboardingModal ref="onboardingRef" />
+
     <!-- Sidebar -->
     <aside class="w-56 shrink-0 flex flex-col border-r border-border bg-surface sticky top-0 h-screen">
       <!-- Logo -->
@@ -42,7 +45,17 @@
 
       <!-- Footer -->
       <div class="px-5 py-4 border-t border-border">
-        <div class="text-xs text-muted">v1.0 · FastAPI + Vue 3</div>
+        <div class="flex items-center justify-between">
+          <div class="text-xs text-muted">v1.0 · FastAPI + Vue 3</div>
+          <button @click="onboardingRef?.open()"
+            title="Afficher le guide d'utilisation"
+            class="text-muted hover:text-white transition-colors p-1 rounded hover:bg-surface2">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 16v-4M12 8h.01"/>
+            </svg>
+          </button>
+        </div>
       </div>
     </aside>
 
@@ -59,11 +72,14 @@
 </template>
 
 <script setup>
+import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { historyStore } from './stores/history.js'
+import OnboardingModal from './components/OnboardingModal.vue'
 
-const router = useRouter()
-const route  = useRoute()
+const router       = useRouter()
+const route        = useRoute()
+const onboardingRef = ref(null)
 
 const nav = [
   { to: '/',       icon: '🧪', label: 'Claim Verifier'     },

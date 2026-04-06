@@ -9,14 +9,11 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  PROMPTS — V5.1 (2-pass chain-of-thought, A/B anchor fix)
+#  PROMPTS — V5.2 (Fix A: NEUTRAL vs INSUFFICIENT_DATA distinction)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ---------------------------------------------------------------------------
 # PASS 1 — Factual extraction WITH claim-based A/B anchor
-# FIX v5.1: claim is provided ONLY to let the LLM assign A and B correctly.
-#            Judgment is still forbidden here.
-# max_tokens bumped to 600 to avoid truncated JSON on complex abstracts.
 # ---------------------------------------------------------------------------
 _PAPER_EXTRACT = """\
 You are a scientific fact extractor. Read the abstract below and return a \
@@ -62,7 +59,6 @@ Return ONLY a raw JSON object. No markdown, no code fences, no extra text.
 
 # ---------------------------------------------------------------------------
 # PASS 2 — Verdict (judgment only, extraction already done)
-# Unchanged logic from V5 — short, sharp rules.
 # ---------------------------------------------------------------------------
 _PAPER_VERDICT = """\
 You are an academic evidence analyst. A factual extraction has already been done \
@@ -131,7 +127,7 @@ Required keys:
 """
 
 # ---------------------------------------------------------------------------
-# Other prompts (unchanged from V5)
+# Other prompts (unchanged)
 # ---------------------------------------------------------------------------
 
 _QUERY_TRANSFORM = """\
@@ -351,7 +347,7 @@ def _is_vague_claim(claim: str) -> bool:
     return not bool(_VERB_RE.search(claim))
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  EMPTY EXTRACTION SENTINEL VALUES
+#  EMPTY EXTRACTION HELPERS
 # ═══════════════════════════════════════════════════════════════════════════════
 
 _EMPTY_FINDINGS = {
@@ -366,10 +362,37 @@ _EMPTY_FINDINGS = {
 }
 
 def _is_empty_extraction(extraction: dict) -> bool:
-    """Return True if Pass 1 produced no usable finding — short-circuit to INSUFFICIENT_DATA."""
+    """True if Pass 1 produced no usable finding at all."""
     finding = str(extraction.get("main_finding") or "").strip().lower()
     quote   = str(extraction.get("evidence_quote") or "").strip()
     return finding in _EMPTY_FINDINGS or (len(finding) < 20 and not quote)
+
+def _short_circuit_verdict(abstract_len: int, extraction: dict) -> dict:
+    """
+    V5.2 FIX A — Distinguish two cases of empty extraction:
+      • abstract absent / too short  → INSUFFICIENT_DATA  (score 0)
+        Cause: Semantic Scholar didn't have the abstract (paywall, missing metadata).
+      • abstract present but no comparison found  → NEUTRAL  (score 2)
+        Cause: The paper exists and has content, but doesn't compare A vs B.
+                Typical for off-topic papers that were surfaced by the search queries.
+    """
+    if abstract_len < 80:
+        return {
+            "verdict": "INSUFFICIENT_DATA", "confidence": "LOW", "relevance_score": 0,
+            "evidence": "Abstract too short or unavailable.",
+            "explanation": "Not enough content to evaluate this paper.",
+            "key_finding": "N/A",
+        }
+    # Abstract was present but extraction yielded nothing → off-topic or no direct comparison
+    return {
+        "verdict": "NEUTRAL", "confidence": "LOW", "relevance_score": 2,
+        "evidence": extraction.get("evidence_quote") or "No directly relevant evidence found.",
+        "explanation": (
+            "The abstract was available but contains no direct comparison relevant to the claim. "
+            "This paper is likely off-topic or addresses a related but distinct question."
+        ),
+        "key_finding": extraction.get("main_finding") or "No finding extractable for this claim.",
+    }
 
 # ═══════════════════════════════════════════════════════════════════════════════
 #  MODEL ROTATOR
@@ -423,9 +446,9 @@ class PaperAnalyzer:
         "ollama": {"base_url": "http://localhost:11434/v1",                                 "default_model": "llama3.2"},
         "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "default_model": "gemini-2.0-flash"},
     }
-    VALID_VERDICTS = {"SUPPORTS", "PARTIALLY_SUPPORTS", "CONTRADICTS", "NEUTRAL", "INSUFFICIENT_DATA"}
-    VALID_OVERALL  = {"SUPPORTED", "PARTIALLY_SUPPORTED", "CONTRADICTED", "MIXED", "INSUFFICIENT_EVIDENCE"}
-    VALID_CONF     = {"HIGH", "MEDIUM", "LOW"}
+    VALID_VERDICTS   = {"SUPPORTS", "PARTIALLY_SUPPORTS", "CONTRADICTS", "NEUTRAL", "INSUFFICIENT_DATA"}
+    VALID_OVERALL    = {"SUPPORTED", "PARTIALLY_SUPPORTED", "CONTRADICTED", "MIXED", "INSUFFICIENT_EVIDENCE"}
+    VALID_CONF       = {"HIGH", "MEDIUM", "LOW"}
     VALID_DIRECTIONS = {"A_beats_B", "B_beats_A", "no_difference", "no_comparison"}
 
     def __init__(self, api_key: str, provider: str = "groq", model: str = None, extra_keys: list = None):
@@ -547,20 +570,13 @@ class PaperAnalyzer:
         return [user_input]
 
     def analyze_paper(self, paper: dict, claim: str) -> dict:
-        """V5.1 — 2-pass chain-of-thought with 4 fixes:
-           1. Pass 1 receives the claim for A/B anchor (not for judgment).
-           2. Empty/failed extraction short-circuits to INSUFFICIENT_DATA — no Pass 2.
-           3. max_tokens 600 in Pass 1 to avoid JSON truncation on long abstracts.
-           4. direction enum sanitised before Pass 2.
-        """
-        abstract = (paper.get("abstract") or "").strip()
-        if len(abstract) < 80:
-            return self._norm_analysis({
-                "verdict": "INSUFFICIENT_DATA", "confidence": "LOW", "relevance_score": 0,
-                "evidence": "Abstract too short or unavailable.",
-                "explanation": "Not enough content to evaluate this paper.",
-                "key_finding": "N/A",
-            })
+        """V5.2 — 2-pass with Fix A: NEUTRAL vs INSUFFICIENT_DATA on empty extraction."""
+        abstract     = (paper.get("abstract") or "").strip()
+        abstract_len = len(abstract)
+
+        # Fast path: no abstract at all
+        if abstract_len < 80:
+            return self._norm_analysis(_short_circuit_verdict(abstract_len, {}))
 
         tldr_obj  = paper.get("tldr") or {}
         tldr_text = tldr_obj.get("text", "Not available") if isinstance(tldr_obj, dict) else "Not available"
@@ -570,7 +586,7 @@ class PaperAnalyzer:
             authors = _author_str(paper),
             abstract= abstract[:2500],
             tldr    = tldr_text,
-            claim   = claim,   # FIX 1: claim forwarded to Pass 1 for A/B anchoring
+            claim   = claim,
         )
 
         extract_fallback = {
@@ -584,34 +600,27 @@ class PaperAnalyzer:
             "relevance_score": 1, "explanation": "LLM analysis failed.",
         }
 
-        # ── Pass 1: factual extraction (max_tokens 600 to prevent truncation) ──
+        # ── Pass 1: factual extraction ──
         try:
-            raw1       = self._llm(_PAPER_EXTRACT.format(**common), temperature=0.1, max_tokens=600)  # FIX 3
+            raw1       = self._llm(_PAPER_EXTRACT.format(**common), temperature=0.1, max_tokens=600)
             extraction = self._parse(raw1, extract_fallback)
         except Exception as exc:
             logger.error("Pass 1 failed for '%s': %s", common["title"], exc)
             extraction = extract_fallback
 
-        # FIX 4: sanitise direction enum
+        # Sanitise direction enum
         if extraction.get("direction") not in self.VALID_DIRECTIONS:
             extraction["direction"] = "no_comparison"
 
-        # FIX 2: short-circuit if extraction is empty — never infer SUPPORTS from nothing
+        # Fix A: empty extraction — route based on whether abstract was present
         if _is_empty_extraction(extraction):
-            logger.warning("Empty extraction for '%s' — skipping Pass 2.", common["title"])
-            return self._norm_analysis({
-                "verdict": "INSUFFICIENT_DATA", "confidence": "LOW", "relevance_score": 0,
-                "evidence": extraction.get("evidence_quote") or "No evidence could be extracted.",
-                "explanation": (
-                    "Pass 1 returned no usable finding. "
-                    "The abstract is likely too short, not in English, or behind a paywall."
-                ),
-                "key_finding": "Could not extract finding.",
-            })
+            logger.warning("Empty extraction for '%s' (abstract_len=%d) — short-circuit.",
+                           common["title"], abstract_len)
+            return self._norm_analysis(_short_circuit_verdict(abstract_len, extraction))
 
         # ── Pass 2: verdict reasoning ──
         try:
-            raw2   = self._llm(
+            raw2 = self._llm(
                 _PAPER_VERDICT.format(
                     claim         = claim,
                     main_finding  = extraction.get("main_finding",   "N/A"),
