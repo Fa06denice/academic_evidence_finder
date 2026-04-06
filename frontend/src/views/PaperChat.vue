@@ -53,10 +53,9 @@
             <h2 class="text-sm font-semibold text-white line-clamp-2">{{ paper.title }}</h2>
             <p class="text-xs text-muted mt-0.5">
               {{ paper.year }}
-              <!-- Source badge -->
-              <span v-if="sourceStatus === 'pdf'"      class="ml-2 text-accent">&bull; 📄 {{ fetchSource }}</span>
-              <span v-else-if="sourceStatus === 'html'" class="ml-2 text-emerald-400">&bull; 🌐 {{ fetchSource }}</span>
-              <span v-else                              class="ml-2 text-amber-400">&bull; Abstract only</span>
+              <span v-if="sourceStatus === 'pdf'"       class="ml-2 text-accent">• 📄 {{ fetchSource }}</span>
+              <span v-else-if="sourceStatus === 'html'" class="ml-2 text-emerald-400">• 🌐 {{ fetchSource }}</span>
+              <span v-else                              class="ml-2 text-amber-400">• Abstract only</span>
             </p>
           </div>
           <button @click="reset" class="text-xs text-muted hover:text-white transition-all ml-4 shrink-0">&times; Change</button>
@@ -67,27 +66,40 @@
           <iframe :src="pdfDataUrl" class="w-full h-full" style="min-height: 60vh" title="Paper PDF"></iframe>
         </div>
 
-        <!-- 2. HTML full-text panel -->
-        <div v-else-if="sourceStatus === 'html'"
-          class="flex-1 bg-surface2 border border-emerald-500/20 rounded-xl p-5 overflow-y-auto"
+        <!-- 2 & 3. Abstract panel (used for both HTML full-text and abstract-only) -->
+        <div v-else
+          :class="sourceStatus === 'html'
+            ? 'border-emerald-500/20'
+            : 'border-border'"
+          class="flex-1 bg-surface2 border rounded-xl p-5 overflow-y-auto"
           style="min-height: 300px">
+
           <!-- Status pill -->
           <div class="flex items-center gap-2 mb-4">
-            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-400 font-medium">
+            <!-- Full text available -->
+            <span v-if="sourceStatus === 'html'"
+              class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 text-xs text-emerald-400 font-medium">
               <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
                 <polyline points="20 6 9 17 4 12"/>
               </svg>
-              Full text available
+              Full text available — chat grounded in full content
             </span>
-            <span class="text-xs text-muted">{{ fetchSource }}</span>
+            <!-- Abstract only -->
+            <span v-else
+              class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full bg-amber-500/10 border border-amber-500/20 text-xs text-amber-400 font-medium">
+              <svg xmlns="http://www.w3.org/2000/svg" class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+              </svg>
+              Abstract only — full text unavailable
+            </span>
           </div>
 
-          <!-- Text preview -->
-          <p class="text-xs font-semibold text-muted uppercase tracking-wider mb-2">Content preview</p>
-          <p class="text-sm text-muted leading-relaxed whitespace-pre-wrap">{{ textPreview }}</p>
+          <!-- Abstract (always shown) -->
+          <p class="text-xs font-semibold text-muted uppercase tracking-wider mb-2">Abstract</p>
+          <p class="text-sm text-muted leading-relaxed">{{ paper.abstract || 'No abstract available.' }}</p>
 
-          <!-- Publisher link if DOI available -->
-          <div v-if="paperDoi" class="mt-4 pt-4 border-t border-border">
+          <!-- Publisher link if DOI available (only for HTML full-text case) -->
+          <div v-if="sourceStatus === 'html' && paperDoi" class="mt-4 pt-4 border-t border-border">
             <p class="text-xs text-muted mb-1.5">Read full text at publisher</p>
             <a :href="'https://doi.org/' + paperDoi" target="_blank" rel="noopener noreferrer"
               class="inline-flex items-center gap-1.5 text-xs text-accent hover:text-accent-hover transition-all">
@@ -97,19 +109,6 @@
               </svg>
               doi.org/{{ paperDoi }}
             </a>
-          </div>
-        </div>
-
-        <!-- 3. Abstract-only fallback -->
-        <div v-else
-          class="flex-1 bg-surface2 border border-border rounded-xl p-5 overflow-y-auto"
-          style="min-height: 300px">
-          <p class="text-xs font-semibold text-muted uppercase tracking-wider mb-3">Abstract</p>
-          <p class="text-sm text-muted leading-relaxed">{{ paper.abstract || 'No abstract available.' }}</p>
-          <div class="mt-4 p-3 bg-amber-500/10 border border-amber-500/20 rounded-lg">
-            <p class="text-xs text-amber-400">
-              Full text not available — the chat is grounded in the abstract only.
-            </p>
           </div>
         </div>
 
@@ -172,9 +171,8 @@ import { streamPost, post } from '../api/index.js'
 // Paper state
 const paper       = ref(null)
 const pdfB64      = ref(null)
-const fetchSource = ref('')   // raw source label from backend, e.g. "Full text (PubMed Central)"
+const fetchSource = ref('')
 const fetchAvail  = ref(false)
-const textPreview = ref('')
 const fetching    = ref(false)
 const fetchError  = ref('')
 const pidInput    = ref('')
@@ -185,13 +183,8 @@ const question   = ref('')
 const streaming  = ref(false)
 const messagesEl = ref(null)
 
-// ── Derived state ────────────────────────────────────────────────────────────
+// ── Derived state ─────────────────────────────────────────────────────────────
 
-/**
- * 'pdf'     → we have a real PDF blob to embed
- * 'html'    → full-text obtained via HTML/XML scrape (no PDF blob)
- * 'abstract'→ only abstract available
- */
 const sourceStatus = computed(() => {
   if (pdfB64.value) return 'pdf'
   const s = fetchSource.value.toLowerCase()
@@ -203,9 +196,7 @@ const pdfDataUrl = computed(() =>
   pdfB64.value ? `data:application/pdf;base64,${pdfB64.value}` : ''
 )
 
-const paperDoi = computed(() => {
-  return paper.value?.externalIds?.DOI || ''
-})
+const paperDoi = computed(() => paper.value?.externalIds?.DOI || '')
 
 const suggestedQuestions = [
   'What is the main contribution of this paper?',
@@ -218,10 +209,7 @@ const suggestedQuestions = [
 onMounted(() => {
   const state = window.history.state
   if (state?.paper) {
-    try {
-      const p = JSON.parse(state.paper)
-      loadPaperObject(p)
-    } catch {}
+    try { loadPaperObject(JSON.parse(state.paper)) } catch {}
   }
 })
 
@@ -240,17 +228,15 @@ async function loadPaperObject(p) {
   pdfB64.value      = null
   fetchSource.value = ''
   fetchAvail.value  = false
-  textPreview.value = ''
   messages.value    = []
   paper.value       = null
 
   try {
     const res = await post('/api/paper/fetch', { paper: p })
     paper.value       = { ...p, ...(res.paper_meta || {}) }
-    pdfB64.value      = res.pdf_b64      || null
-    fetchSource.value = res.source       || 'unknown'
-    fetchAvail.value  = res.available    ?? false
-    textPreview.value = res.text_preview || ''
+    pdfB64.value      = res.pdf_b64   || null
+    fetchSource.value = res.source    || 'unknown'
+    fetchAvail.value  = res.available ?? false
   } catch (e) {
     fetchError.value = e.message || 'Failed to fetch paper.'
   } finally {
@@ -295,7 +281,6 @@ function reset() {
   pdfB64.value      = null
   fetchSource.value = ''
   fetchAvail.value  = false
-  textPreview.value = ''
   messages.value    = []
   pidInput.value    = ''
   fetchError.value  = ''
