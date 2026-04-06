@@ -1,3 +1,19 @@
 .DS_Store
 __pycache__/
+*.pyc
+*.pyo
 paper_cache.json
+.env
+
+# Node
+frontend/node_modules/
+node_modules/
+
+# Build output
+frontend/dist/
+dist/
+
+# Python virtualenvs
+venv/
+.venv/
+env/

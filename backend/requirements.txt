@@ -4,9 +4,8 @@ pydantic==2.10.3
 openai>=1.55.0
 requests>=2.32.0
 python-dotenv>=1.0.0
-pymupdf>=1.24.0
+# Pin to exact version that ships prebuilt wheels on PyPI (no C++ compilation)
+pymupdf==1.24.3
 httpx>=0.27.0
 beautifulsoup4>=4.12.0
 lxml>=5.2.0
-
-# cache bust Mon Apr  6 14:13 CEST 2026
