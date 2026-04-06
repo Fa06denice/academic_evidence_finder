@@ -157,10 +157,16 @@ Think step by step before concluding:
 5. Translate non-English claims before evaluating.
 6. Specific numbers/dosages not confirmed by any paper → CONTRADICTED or PARTIALLY_SUPPORTED.
 
+7. Overall confidence:
+   HIGH   → Multiple HIGH-confidence direct papers agree; little contradiction.
+   MEDIUM → Evidence is mostly indirect, mixed quality, or from partially-relevant populations.
+   LOW    → Very few relevant papers, most are NEUTRAL/INSUFFICIENT, or evidence is highly mixed.
+
 ━━━ OUTPUT FORMAT ━━━
 Return ONLY a raw JSON object. No markdown. No code fences.
 Required keys:
   "overall_verdict"     : one of SUPPORTED | PARTIALLY_SUPPORTED | CONTRADICTED | MIXED | INSUFFICIENT_EVIDENCE
+  "overall_confidence"  : one of HIGH | MEDIUM | LOW
   "verdict_explanation" : 3 sentences — synthesize the evidence, cite 2-3 paper titles by name
   "supporting_count"    : integer
   "contradicting_count" : integer
@@ -410,11 +416,13 @@ class PaperAnalyzer:
         claim = claim.strip()
         if not claim:
             return self._norm_overall({"overall_verdict": "INSUFFICIENT_EVIDENCE",
+                                       "overall_confidence": "LOW",
                                        "verdict_explanation": "No claim was provided.",
                                        "supporting_count": 0, "contradicting_count": 0, "neutral_count": 0})
         if _is_vague_claim(claim):
             return self._norm_overall({
                 "overall_verdict": "INSUFFICIENT_EVIDENCE",
+                "overall_confidence": "LOW",
                 "verdict_explanation": (
                     'The input "' + claim + '" is too vague to evaluate scientifically. '
                     "Please enter a full sentence with subject + verb + specific assertion. "
@@ -468,6 +476,7 @@ class PaperAnalyzer:
     def _norm_overall(self, d: dict) -> dict:
         return {
             "overall_verdict":     d.get("overall_verdict", "INSUFFICIENT_EVIDENCE") if d.get("overall_verdict") in self.VALID_OVERALL else "INSUFFICIENT_EVIDENCE",
+            "overall_confidence":  d.get("overall_confidence", "LOW") if d.get("overall_confidence") in self.VALID_CONF else "LOW",
             "verdict_explanation": str(d.get("verdict_explanation") or ""),
             "supporting_count":    _safe_int(d.get("supporting_count"),    0),
             "contradicting_count": _safe_int(d.get("contradicting_count"), 0),
@@ -519,6 +528,7 @@ class PaperAnalyzer:
     def overall_verdict(self, claim: str, results: List[Tuple[dict, dict]]) -> dict:
         if not results:
             return self._norm_overall({"overall_verdict": "INSUFFICIENT_EVIDENCE",
+                                       "overall_confidence": "LOW",
                                        "verdict_explanation": "No papers with sufficient content were retrieved.",
                                        "supporting_count": 0, "contradicting_count": 0, "neutral_count": 0})
         lines = []
@@ -532,6 +542,7 @@ class PaperAnalyzer:
             )
         fallback = {
             "overall_verdict": "MIXED",
+            "overall_confidence": "LOW",
             "verdict_explanation": "Could not synthesize automatically.",
             "supporting_count":    sum(1 for _, a in results if a.get("verdict") in {"SUPPORTS", "PARTIALLY_SUPPORTS"}),
             "contradicting_count": sum(1 for _, a in results if a.get("verdict") == "CONTRADICTS"),

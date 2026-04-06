@@ -24,7 +24,7 @@
         <button type="button" @click="submit" :disabled="loading || !topic.trim()"
           class="ml-auto px-5 py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-all flex items-center gap-2">
           <span v-if="loading" class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-          {{ loading ? 'Reviewing…' : 'Generate Review' }}
+          {{ loading ? 'Reviewing\u2026' : 'Generate Review' }}
         </button>
       </div>
     </div>
@@ -43,14 +43,13 @@
     <!-- Error -->
     <div v-if="error" class="mb-4 p-4 bg-red-500/10 border border-red-500/20 rounded-xl text-sm text-red-400">{{ error }}</div>
 
-    <!-- Review — rendu Markdown brut ou sections structurées -->
+    <!-- Review text -->
     <div v-if="reviewText && !loading">
       <div class="flex gap-2 mb-4">
-        <button type="button" @click="exportMarkdown" class="px-3 py-1.5 text-xs font-medium bg-surface2 border border-border rounded-lg text-muted hover:text-white transition-all">📄 Export Markdown</button>
+        <button type="button" @click="exportMarkdown" class="px-3 py-1.5 text-xs font-medium bg-surface2 border border-border rounded-lg text-muted hover:text-white transition-all">\u{1F4C4} Export Markdown</button>
       </div>
-      <div class="bg-surface border border-border rounded-2xl p-6">
+      <div class="bg-surface border border-border rounded-2xl p-6 mb-6">
         <div class="prose prose-invert prose-sm max-w-none">
-          <!-- Affiche sections parsées si disponibles, sinon le texte brut -->
           <div v-if="sections.length">
             <div v-for="(s, i) in sections" :key="i" class="mb-6">
               <h2 class="text-base font-semibold text-white mb-2">{{ s.title }}</h2>
@@ -60,11 +59,24 @@
           <pre v-else class="text-sm text-muted leading-relaxed whitespace-pre-wrap font-sans">{{ reviewText }}</pre>
         </div>
       </div>
+
+      <!-- Source papers -->
+      <div v-if="papers.length" class="mt-2">
+        <h2 class="text-sm font-semibold text-white mb-3">{{ papers.length }} Source Papers</h2>
+        <div class="space-y-3">
+          <PaperCard
+            v-for="item in papers"
+            :key="item.paper.paperId"
+            :paper="item.paper"
+            :analysis="item.analysis"
+          />
+        </div>
+      </div>
     </div>
 
-    <!-- Empty -->
+    <!-- Empty state -->
     <div v-if="!loading && !reviewText && !error" class="text-center py-24">
-      <div class="text-5xl mb-4">📚</div>
+      <div class="text-5xl mb-4">\u{1F4DA}</div>
       <p class="text-sm text-muted max-w-xs mx-auto">Enter a research topic to generate a structured literature review.</p>
     </div>
   </div>
@@ -73,20 +85,21 @@
 <script setup>
 import { ref, computed } from 'vue'
 import { streamPost } from '../api/index.js'
+import PaperCard from '../components/PaperCard.vue'
 
 const topic       = ref('')
 const maxPapers   = ref(10)
 const loading     = ref(false)
-const progressMsg = ref('Searching literature…')
+const progressMsg = ref('Searching literature\u2026')
 const progressPct = ref(0)
-const reviewRaw   = ref(null)   // peut être string ou objet
+const reviewRaw   = ref(null)
+const papers      = ref([])   // { paper, analysis }[]
 const error       = ref('')
 
 // Normalise : toujours travailler avec une string
 const reviewText = computed(() => {
   if (!reviewRaw.value) return ''
   if (typeof reviewRaw.value === 'string') return reviewRaw.value
-  // objet : concatène les valeurs connues
   const keys = ['introduction','background','methodology','findings','gaps','conclusion','discussion']
   return keys.filter(k => reviewRaw.value[k])
     .map(k => `## ${k.charAt(0).toUpperCase()+k.slice(1)}\n\n${reviewRaw.value[k]}`)
@@ -110,21 +123,40 @@ async function submit() {
   if (!topic.value.trim() || loading.value) return
   loading.value   = true
   reviewRaw.value = null
+  papers.value    = []
   error.value     = ''
   progressPct.value = 0
-  progressMsg.value = 'Searching literature…'
+  progressMsg.value = 'Searching literature\u2026'
+
+  // We collect papers from the SSE 'papers' event.
+  // The backend sends: { type:"papers", data:[{ paper:{...}, analysis:{...} }] }
+  // or a flat array of paper objects. We normalise both shapes below.
+  const rawPaperBuf = []
 
   await streamPost('/api/review', { topic: topic.value, max_papers: maxPapers.value }, {
     onProgress(e) {
       progressMsg.value = e.message
       if (e.step && e.total) progressPct.value = Math.round((e.step / e.total) * 90)
     },
+    onPapers(payload) {
+      // payload is the array from the SSE "papers" event
+      const arr = Array.isArray(payload) ? payload : (payload?.papers || [])
+      arr.forEach(item => rawPaperBuf.push(item))
+    },
     onReview(r) {
-      console.log('[Review] raw data:', typeof r, r)
       reviewRaw.value = r
     },
     onError(e)  { error.value = e.message },
-    onDone()    { progressPct.value = 100; loading.value = false },
+    onDone()    {
+      progressPct.value = 100
+      loading.value = false
+      // Normalise paper items: backend may send full objects or { paper, analysis } pairs
+      papers.value = rawPaperBuf.map(item => {
+        if (item && item.paper) return item
+        // flat paper object without analysis wrapper
+        return { paper: item, analysis: { verdict: 'NEUTRAL', confidence: 'LOW', relevance_score: 0, evidence: '', explanation: '', key_finding: 'N/A' } }
+      }).filter(item => item.paper && item.paper.paperId)
+    },
   })
 }
 
