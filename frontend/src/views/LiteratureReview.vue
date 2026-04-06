@@ -24,7 +24,7 @@
         <button type="button" @click="submit" :disabled="loading || !topic.trim()"
           class="ml-auto px-5 py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-all flex items-center gap-2">
           <span v-if="loading" class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
-          {{ loading ? 'Reviewing\u2026' : 'Generate Review' }}
+          {{ loading ? 'Reviewing…' : 'Generate Review' }}
         </button>
       </div>
     </div>
@@ -46,7 +46,10 @@
     <!-- Review text -->
     <div v-if="reviewText && !loading">
       <div class="flex gap-2 mb-4">
-        <button type="button" @click="exportMarkdown" class="px-3 py-1.5 text-xs font-medium bg-surface2 border border-border rounded-lg text-muted hover:text-white transition-all">\u{1F4C4} Export Markdown</button>
+        <button type="button" @click="exportMarkdown"
+          class="px-3 py-1.5 text-xs font-medium bg-surface2 border border-border rounded-lg text-muted hover:text-white transition-all">
+          📄 Export Markdown
+        </button>
       </div>
       <div class="bg-surface border border-border rounded-2xl p-6 mb-6">
         <div class="prose prose-invert prose-sm max-w-none">
@@ -76,7 +79,7 @@
 
     <!-- Empty state -->
     <div v-if="!loading && !reviewText && !error" class="text-center py-24">
-      <div class="text-5xl mb-4">\u{1F4DA}</div>
+      <div class="text-5xl mb-4">📚</div>
       <p class="text-sm text-muted max-w-xs mx-auto">Enter a research topic to generate a structured literature review.</p>
     </div>
   </div>
@@ -90,13 +93,12 @@ import PaperCard from '../components/PaperCard.vue'
 const topic       = ref('')
 const maxPapers   = ref(10)
 const loading     = ref(false)
-const progressMsg = ref('Searching literature\u2026')
+const progressMsg = ref('Searching literature…')
 const progressPct = ref(0)
 const reviewRaw   = ref(null)
-const papers      = ref([])   // { paper, analysis }[]
+const papers      = ref([])
 const error       = ref('')
 
-// Normalise : toujours travailler avec une string
 const reviewText = computed(() => {
   if (!reviewRaw.value) return ''
   if (typeof reviewRaw.value === 'string') return reviewRaw.value
@@ -106,7 +108,6 @@ const reviewText = computed(() => {
     .join('\n\n')
 })
 
-// Parse les sections ## du markdown
 const sections = computed(() => {
   const text = reviewText.value
   if (!text) return []
@@ -126,11 +127,8 @@ async function submit() {
   papers.value    = []
   error.value     = ''
   progressPct.value = 0
-  progressMsg.value = 'Searching literature\u2026'
+  progressMsg.value = 'Searching literature…'
 
-  // We collect papers from the SSE 'papers' event.
-  // The backend sends: { type:"papers", data:[{ paper:{...}, analysis:{...} }] }
-  // or a flat array of paper objects. We normalise both shapes below.
   const rawPaperBuf = []
 
   await streamPost('/api/review', { topic: topic.value, max_papers: maxPapers.value }, {
@@ -139,7 +137,6 @@ async function submit() {
       if (e.step && e.total) progressPct.value = Math.round((e.step / e.total) * 90)
     },
     onPapers(payload) {
-      // payload is the array from the SSE "papers" event
       const arr = Array.isArray(payload) ? payload : (payload?.papers || [])
       arr.forEach(item => rawPaperBuf.push(item))
     },
@@ -150,10 +147,8 @@ async function submit() {
     onDone()    {
       progressPct.value = 100
       loading.value = false
-      // Normalise paper items: backend may send full objects or { paper, analysis } pairs
       papers.value = rawPaperBuf.map(item => {
         if (item && item.paper) return item
-        // flat paper object without analysis wrapper
         return { paper: item, analysis: { verdict: 'NEUTRAL', confidence: 'LOW', relevance_score: 0, evidence: '', explanation: '', key_finding: 'N/A' } }
       }).filter(item => item.paper && item.paper.paperId)
     },

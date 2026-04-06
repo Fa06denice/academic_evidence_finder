@@ -1,9 +1,11 @@
 import json
 import logging
 import os
+import base64
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, JSONResponse
@@ -12,6 +14,13 @@ from pydantic import BaseModel
 from analyzer import PaperAnalyzer
 from scholar_client import SemanticScholarClient
 from cache_manager import CacheManager
+from paper_chat import (
+    fetch_full_text,
+    fetch_pdf_bytes,
+    extract_text_from_pdf,
+    select_relevant_chunks,
+    build_system_prompt,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -41,7 +50,10 @@ def _get_clients():
 
 scholar, analyzer, cache = _get_clients()
 
-# ── Cache helpers (compatible with all CacheManager versions) ─────────────────
+# In-memory full-text cache  { paperId: (text, source_label) }
+_text_cache: dict[str, tuple[str, str]] = {}
+
+# ── Cache helpers ─────────────────────────────────────────────────────────────────
 def _cache_get_summary(pid: str) -> Optional[str]:
     try:
         if hasattr(cache, 'get_summary'):
@@ -62,14 +74,12 @@ def _cache_set_summary(pid: str, summary: str):
     except Exception:
         pass
 
-# ── Helpers ──────────────────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────────────
 def _sse(event_type: str, data: dict) -> str:
     payload = json.dumps({"type": event_type, **data}, ensure_ascii=False)
     return f"data: {payload}\n\n"
 
 def _fetch_papers(queries: list, max_papers: int, year: Optional[str]) -> list:
-    """Fetch from Semantic Scholar, dedup, sort by citations, return top max_papers."""
-    # Ask for more per query to compensate for deduplication
     per_query = max(max_papers, 15)
     seen, papers = set(), []
     for q in queries:
@@ -85,7 +95,7 @@ def _fetch_papers(queries: list, max_papers: int, year: Optional[str]) -> list:
     papers = sorted(papers, key=lambda p: p.get("citationCount") or 0, reverse=True)
     return papers[:max_papers]
 
-# ── Request models ────────────────────────────────────────────────────────────
+# ── Request models ────────────────────────────────────────────────────────────────
 class ClaimRequest(BaseModel):
     claim: str
     max_papers: int = 7
@@ -99,7 +109,15 @@ class TopicRequest(BaseModel):
 class SummarizeRequest(BaseModel):
     paper: dict
 
-# ── Routes ────────────────────────────────────────────────────────────────────
+class FetchPaperRequest(BaseModel):
+    paper: dict
+
+class ChatRequest(BaseModel):
+    paper: dict
+    question: str
+    history: list = []
+
+# ── Routes ─────────────────────────────────────────────────────────────────────────
 
 @app.get("/api/health")
 def health():
@@ -206,7 +224,6 @@ def search_papers(req: TopicRequest):
 
 @app.post("/api/summarize")
 async def summarize_paper(req: SummarizeRequest):
-    """Summarize a single paper — never returns 500."""
     try:
         paper   = req.paper
         pid     = paper.get("paperId", "")
@@ -222,7 +239,112 @@ async def summarize_paper(req: SummarizeRequest):
         return JSONResponse(status_code=200, content={"summary": f"Summarization temporarily unavailable: {exc}"})
 
 
+@app.post("/api/paper/fetch")
+async def fetch_paper(req: FetchPaperRequest):
+    """
+    Retrieve the fullest available text for a paper using the cascade:
+      openAccessPdf PDF → arXiv PDF → PMC HTML → Europe PMC → BioMed DOI scrape → abstract
+    Caches result server-side. Returns source label so the UI can show it.
+    """
+    paper = req.paper
+    pid   = paper.get("paperId", "")
+
+    # Return cached result immediately
+    if pid and pid in _text_cache:
+        text, source = _text_cache[pid]
+        return {
+            "available": source != "unavailable",
+            "source":    source,
+            "pdf_b64":   None,
+            "text_preview": text[:500],
+            "pid": pid,
+        }
+
+    # Run the full cascade
+    text, source = fetch_full_text(paper)
+
+    if pid and text:
+        _text_cache[pid] = (text, source)
+
+    # If we got a PDF (source says PDF), also encode it for inline viewer
+    pdf_b64 = None
+    if "PDF" in source:
+        # Re-fetch PDF bytes just for the b64 (cheap, already cached at OS level)
+        try:
+            pdf_bytes, _ = fetch_pdf_bytes(paper)
+            if pdf_bytes:
+                pdf_b64 = base64.b64encode(pdf_bytes).decode()
+        except Exception:
+            pass
+
+    return {
+        "available": bool(text) and source != "unavailable",
+        "source":    source,
+        "pdf_b64":   pdf_b64,
+        "text_preview": text[:500] if text else "",
+        "pid": pid,
+    }
+
+
+@app.post("/api/paper/chat")
+def paper_chat(req: ChatRequest):
+    """
+    Stream a chat response grounded in the paper's text.
+    If the text isn't cached yet, runs the full-text cascade on-the-fly.
+    """
+    def generate():
+        try:
+            paper    = req.paper
+            pid      = paper.get("paperId", "")
+            question = req.question.strip()
+
+            # Get or fetch full text
+            if pid and pid in _text_cache:
+                full_text, source = _text_cache[pid]
+            else:
+                full_text, source = fetch_full_text(paper)
+                if pid and full_text:
+                    _text_cache[pid] = (full_text, source)
+
+            if not full_text:
+                full_text = paper.get("abstract") or ""
+                source    = "Abstract only (full text unavailable)"
+
+            content    = select_relevant_chunks(full_text, question) if full_text else "No content available."
+            sys_prompt = build_system_prompt(paper, content, source=source)
+
+            messages = [{"role": "system", "content": sys_prompt}]
+            for turn in req.history[-6:]:
+                role = turn.get("role", "user")
+                if role in ("user", "assistant") and turn.get("content"):
+                    messages.append({"role": role, "content": turn["content"]})
+            messages.append({"role": "user", "content": question})
+
+            client, model, _ = analyzer.rotator.current
+            stream = client.chat.completions.create(
+                model=model,
+                messages=messages,
+                temperature=0.1,
+                max_tokens=800,
+                stream=True,
+            )
+            for chunk in stream:
+                token = (chunk.choices[0].delta.content or "") if chunk.choices else ""
+                if token:
+                    yield _sse("token", {"text": token})
+            yield _sse("done", {})
+
+        except Exception as exc:
+            logger.exception("paper_chat error")
+            yield _sse("error", {"message": str(exc)})
+            yield _sse("done", {})
+
+    return StreamingResponse(generate(), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
 @app.delete("/api/cache")
 def clear_cache():
     cache.clear()
+    _text_cache.clear()
     return {"status": "cleared"}
