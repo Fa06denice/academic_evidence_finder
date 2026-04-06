@@ -9,9 +9,13 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  PROMPTS — V1-FINAL + V2 hardened single-pass
+#  PROMPTS
 # ══════════════════════════════════════════════════════════════════════════════
 
+# ——————————————————————————————————————————————————————
+# BUG FIX #2: QUERY_TRANSFORM anchor rule
+# Chaque query DOIT contenir l’intervention ET l’outcome du claim.
+# ———————————————————————————————————————————————————————
 _QUERY_TRANSFORM = """\
 You are a senior academic librarian with expertise in systematic literature search.
 Your task: convert a scientific claim into {n_queries} DISTINCT, high-yield Semantic Scholar queries.
@@ -30,20 +34,27 @@ HARD RULES:
 - Preserve exact medical/scientific terms — never paraphrase or generalize.
 - 3 to 7 words per query. No stopwords, no punctuation.
 - All queries must be meaningfully different from each other.
+- ANCHOR RULE — CRITICAL: Every single query MUST include BOTH:
+    (1) the intervention / subject of the claim (e.g. "caffeine", "coffee", "vitamin D")
+    (2) the outcome / object of the claim (e.g. "sleep", "depression", "mortality")
+  Never query the outcome alone without the intervention, and never query the
+  intervention alone without the outcome. A query like "sleep quality" or "caffeine"
+  in isolation is FORBIDDEN when the claim is about "coffee and sleep".
+  EXAMPLE: claim = "coffee is beneficial for sleep"
+    GOOD: "caffeine sleep quality RCT", "coffee sleep latency humans", "caffeine sleep deprivation"
+    BAD:  "sleep quality adults", "caffeine cognitive function", "melatonin sleep" (wrong intervention)
 - If the claim contains a comparison (e.g. "no more than", "better than", "compared to",
   "versus"), ALWAYS include the comparator explicitly in at least one query.
-  Example: "SSRIs no more effective than placebo for mild depression"
-  → must produce a query like "SSRI placebo mild depression meta-analysis"
-  → and another like "antidepressant efficacy mild depression randomized trial"
 - If the claim is a comparative (A vs B), generate queries for BOTH sides of the comparison
   so that papers supporting either direction are retrieved.
-  Example: "Quantum computing outperforms classical computing"
-  → "quantum advantage classical simulation comparison"
-  → "classical algorithms competitive quantum circuits benchmark"
 
 Return ONLY a valid JSON array of exactly {n_queries} strings.
 """
 
+# ———————————————————————————————————————————————————————
+# BUG FIX #1: PAPER_ANALYSIS — règle OUTCOME MISMATCH
+# Si le paper ne mesure PAS l’outcome du claim → NEUTRAL, jamais CONTRADICTS.
+# ———————————————————————————————————————————————————————
 _PAPER_ANALYSIS = """\
 You are a rigorous academic evidence analyst. Your task is to assess whether a \
 scientific paper SUPPORTS, CONTRADICTS, or is UNRELATED to a specific claim.
@@ -62,21 +73,21 @@ PAPER:
 Before choosing a verdict, explicitly answer these three questions in your head:
 
   Q1. DIRECTION: What does the claim assert? Identify:
-      - The subject (A) and object (B) of the claim
-      - The direction: does the claim say A > B, A = B, A causes B, A prevents B, etc.?
-      Example: "Traditional CS is more efficient than Quantum CS"
-        → Subject=Traditional CS, Object=Quantum CS, Direction=Traditional > Quantum
+      - The subject/intervention (A), the outcome/object (B), and the direction
+      - Does the claim say A improves B, A causes B, A prevents B, A > B, etc.?
+      Example: "Coffee is beneficial for sleep"
+        → Intervention=Coffee/caffeine, Outcome=sleep quality/duration, Direction=coffee improves sleep
 
-  Q2. PAPER FINDING: What does THIS paper actually conclude?
-      - Does the paper say A > B, B > A, A = B, or something else entirely?
-      - Do NOT infer from the paper's topic or title — only from its stated findings.
-      - Ignore which side the paper's authors are rooting for; focus on what their data shows.
+  Q2. PAPER FINDING: What does THIS paper actually measure and conclude?
+      - Does the paper MEASURE the same outcome (B) as the claim?
+      - If the paper does NOT measure outcome B at all → go to Q3 with "outcome not measured".
+      - If it does measure B: does it show A improves B, A worsens B, or A has no effect on B?
 
-  Q3. ALIGNMENT: Does the paper's finding ALIGN with the claim's direction?
-      - If the claim says A > B and the paper shows A > B → SUPPORTS
-      - If the claim says A > B and the paper shows B > A → CONTRADICTS
-      - If the claim says A > B and the paper shows A = B → CONTRADICTS (or NEUTRAL if context differs)
-      - If the paper is about A vs B but doesn't quantify the direction → NEUTRAL
+  Q3. ALIGNMENT:
+      - If the paper does NOT measure the claim’s outcome → NEUTRAL (outcome mismatch)
+      - If the paper shows A improves B (same direction as claim) → SUPPORTS or PARTIALLY_SUPPORTS
+      - If the paper shows A worsens B or A has no effect on B → CONTRADICTS or PARTIALLY_SUPPORTS
+      - If the paper is about A vs B but doesn’t quantify the direction → NEUTRAL
 
 ━━━ ANALYSIS PROTOCOL ━━━
 
@@ -90,74 +101,77 @@ Use it verbatim as your "evidence" field. If no single sentence is perfect, \
 use the closest paraphrase in quotes.
 
 STEP 3 — VERDICT (choose the MOST ACCURATE — do not default to safe options)
-  SUPPORTS           → The paper's findings EXPLICITLY confirm the claim IN THE SAME DIRECTION.
-                       The direction of the paper's result must MATCH the direction of the claim.
-                       If the claim says "A beats B" and the paper shows "A beats B" → SUPPORTS.
-  PARTIALLY_SUPPORTS → The paper provides related evidence that lends credibility to the claim,
-                       but with caveats: DIFFERENT population or subgroup, indirect measure,
-                       small sample, animal/in vitro model, or only partial confirmation.
-  CONTRADICTS        → The paper's findings EXPLICITLY oppose the claim IN THE SAME DIRECTION
-                       and IN THE SAME population/context. If the claim says "A beats B" and
-                       the paper shows "B beats A" (or "A does NOT beat B") → CONTRADICTS.
-                       If populations differ significantly, use PARTIALLY_SUPPORTS instead.
-  NEUTRAL            → The paper is on the same broad topic but does not directly test
-                       the claim's assertion. It discusses context, policy, or related factors.
+  SUPPORTS           → The paper EXPLICITLY measures the claim’s outcome AND confirms the
+                       claim in the SAME direction, same population.
+  PARTIALLY_SUPPORTS → Related evidence with caveats: different population or subgroup,
+                       indirect measure, small sample, animal/in vitro model, or partial confirmation.
+  CONTRADICTS        → The paper EXPLICITLY measures the claim’s outcome AND opposes the
+                       claim IN THE SAME population/context.
+                       CRITICAL: CONTRADICTS requires that the paper measures the SAME outcome
+                       as the claim. A paper measuring cognitive function does NOT contradict
+                       a claim about sleep — assign NEUTRAL instead.
+  NEUTRAL            → (a) The paper is on the same broad topic but does not directly test
+                       the claim’s assertion, OR
+                       (b) The paper measures a DIFFERENT outcome than the one in the claim
+                       (outcome mismatch), OR
+                       (c) The paper discusses context, policy, or related factors only.
   INSUFFICIENT_DATA  → LAST RESORT ONLY. Use ONLY when the abstract has fewer than 60 words
                        OR is completely unreadable/missing. Do NOT use as a safe default.
 
 ━━━ CRITICAL DIRECTION RULES (read carefully) ━━━
 
+▶ OUTCOME MISMATCH — THE MOST IMPORTANT RULE:
+  CONTRADICTS requires that the paper actually measures the SAME outcome as the claim.
+  - Claim: "coffee is beneficial for SLEEP"
+    Paper studies coffee → cognitive function only → NEUTRAL (does not measure sleep)
+    Paper studies coffee → sleep latency → can be CONTRADICTS or SUPPORTS
+  - Claim: "X reduces DEPRESSION"
+    Paper studies X → blood pressure only → NEUTRAL (does not measure depression)
+  - A paper can only CONTRADICT a claim if it measures what the claim asserts.
+    "No evidence of effect" on a DIFFERENT outcome = NEUTRAL, never CONTRADICTS.
+
 ▶ COMPARATIVE CLAIMS — direction is everything:
   - "A is better than B" vs "B is better than A" are OPPOSITE claims.
   - A paper that shows B > A CONTRADICTS "A > B" even if both deal with the same topic.
-  - A paper that shows A > B SUPPORTS "A > B" even if the paper's authors favor B.
-  - The paper's conclusion on which side "wins" is what matters — not the paper's topic.
+  - A paper that shows A > B SUPPORTS "A > B" even if the paper’s authors favor B.
   EXAMPLE:
     Claim: "Traditional CS is more efficient than Quantum CS"
     Paper finds: classical simulation on laptop is faster than quantum hardware → SUPPORTS
     Paper finds: quantum processor outperforms best classical approximation → CONTRADICTS
 
-▶ NEGATION TRAPS — absence of effect:
+▶ NEGATION TRAPS — absence of effect ON THE CLAIMED OUTCOME:
   - "No significant difference", "no association", "no effect", "did not improve"
-    → These OPPOSE any claim of a positive effect. Label as CONTRADICTS (same population)
-       or PARTIALLY_SUPPORTS against (different population).
-  - "Did not reduce", "failed to prevent", "no reduction in"
-    → These CONTRADICT a claim that says the intervention reduces/prevents that outcome.
-  - Do NOT confuse "the paper studied X" with "the paper supports X".
+    on the SAME outcome → CONTRADICTS (same population) or PARTIALLY_SUPPORTS against
+    (different population).
+  - These rules apply ONLY when the paper measures the same outcome as the claim.
+    If the paper measures a different outcome: NEUTRAL regardless.
 
 ▶ SCOPE TRAPS — partial or conditional findings:
-  - If the paper shows an effect only under specific conditions (e.g. high doses, specific
-    subgroups, narrow circuit types) but the claim is general, use PARTIALLY_SUPPORTS.
-  - If the paper shows an effect for SOME circuits/populations but the claim is absolute
-    ("always", "in general", "more efficient"), do NOT assign SUPPORTS — use PARTIALLY_SUPPORTS.
+  - If the paper shows an effect only under specific conditions but the claim is general,
+    use PARTIALLY_SUPPORTS.
+  - Absolute claims ("always", "in general") → PARTIALLY_SUPPORTS if only partial confirmation.
 
-▶ TITLE/TOPIC TRAP — do not infer verdict from the paper's subject:
-  - A paper titled "Evidence for Quantum Utility" does NOT automatically SUPPORT a claim that
-    quantum is better. Read the actual finding.
-  - A paper about quantum computing does not automatically CONTRADICT a pro-classical claim.
-    It depends entirely on what the paper's results show.
+▶ TITLE/TOPIC TRAP — do not infer verdict from the paper’s subject:
+  - A paper about caffeine/coffee does NOT automatically CONTRADICT a claim about
+    coffee and sleep. Only what the paper MEASURES and FINDS matters.
+  - A paper’s title alone never determines the verdict.
 
 ━━━ ANTI-HALLUCINATION RULES ━━━
 - Base analysis SOLELY on the abstract and TL;DR provided. Nothing else.
 - Do NOT add knowledge from outside the abstract.
 - Do NOT invent quotes. If quoting, it must appear verbatim in the abstract above.
 - If uncertain between NEUTRAL and PARTIALLY_SUPPORTS: does the abstract contain
-  a finding that even indirectly supports or weakens the claim? If yes → PARTIALLY_SUPPORTS.
-- If a paper demonstrates the ABSENCE, impossibility, or non-occurrence of the claimed
-  effect — even without using the exact words of the claim — this CONTRADICTS the claim
-  (if the population matches) or PARTIALLY_SUPPORTS against it (if population differs).
-  Apply broadly: "no effect", "no association", "no difference" on the claimed outcome.
-- Mechanistic studies (in vitro, cell culture, animal models) that show a potential
-  effect do NOT constitute SUPPORTS for a causal claim in humans. Use PARTIALLY_SUPPORTS
-  at most with LOW confidence, unless the paper explicitly establishes human causation.
-- Population mismatch rule: if the claim specifies a population (e.g. "non-diabetic
-  patients", "healthy adults", "children") and the paper studies a DIFFERENT population
-  (e.g. type 2 diabetics, elderly, animals), cap the verdict at PARTIALLY_SUPPORTS and
-  set confidence to MEDIUM or LOW. Never assign CONTRADICTS HIGH across a population gap.
+  a finding that even indirectly supports or weakens the SAME outcome as the claim?
+  If yes → PARTIALLY_SUPPORTS. If the outcome differs → NEUTRAL.
+- Mechanistic studies (in vitro, cell culture, animal models): PARTIALLY_SUPPORTS at most
+  with LOW confidence, unless the paper explicitly establishes human causation.
+- Population mismatch rule: if the claim specifies a population and the paper studies a
+  DIFFERENT population, cap the verdict at PARTIALLY_SUPPORTS (MEDIUM or LOW confidence).
+  Never assign CONTRADICTS HIGH across a population gap.
 
 ━━━ CONFIDENCE ━━━
-  HIGH   → The abstract directly and explicitly addresses the claim in the same direction,
-            same population. The verdict is unambiguous.
+  HIGH   → The abstract directly and explicitly addresses the claim’s outcome in the same
+            direction, same population. The verdict is unambiguous.
   MEDIUM → Indirect evidence, different (but related) population, conditional findings,
             or requires some interpretation.
   LOW    → The link is weak, speculative, different population, or the abstract is very short.
@@ -167,12 +181,16 @@ Return ONLY a raw JSON object. No markdown. No code fences. No text outside the 
 Required keys:
   "verdict"        : one of SUPPORTS | PARTIALLY_SUPPORTS | CONTRADICTS | NEUTRAL | INSUFFICIENT_DATA
   "confidence"     : one of HIGH | MEDIUM | LOW
-  "relevance_score": integer 0-10
+  "relevance_score": integer 0-10 (rate how directly this paper tests the claim’s specific outcome)
   "evidence"       : exact quote or tight paraphrase from the abstract (max 2 sentences)
-  "explanation"    : 1-2 sentences explaining WHY this verdict was chosen, referencing the direction
+  "explanation"    : 1-2 sentences explaining WHY this verdict was chosen, referencing the outcome
   "key_finding"    : the single most important result of the paper in one sentence
 """
 
+# ———————————————————————————————————————————————————————
+# BUG FIX #3: OVERALL_VERDICT — seuil relevance_score >= 4
+# L’overall ne compte que les papers pertinents pour la confidence.
+# ———————————————————————————————————————————————————————
 _OVERALL_VERDICT = """\
 You are a senior scientist synthesizing evidence from multiple peer-reviewed papers \
 to issue a final verdict on a scientific claim.
@@ -186,57 +204,64 @@ INDIVIDUAL PAPER ANALYSES:
 Think step by step before concluding:
 
 1. CLAIM DIRECTION — first, identify what the claim asserts:
-   - Subject, object, and direction (A > B? A causes B? A prevents B?)
+   - Intervention/subject, outcome/object, and direction (A improves B? A causes B? A > B?)
    - This is your reference frame for the entire synthesis.
 
-2. Count papers by verdict category:
+2. FILTER by relevance first:
+   - Separate papers with relevance_score >= 4 ("relevant papers") from those with score < 4.
+   - Base your verdict and confidence ONLY on relevant papers (score >= 4).
+   - Papers with relevance_score < 4 are background noise — do NOT let them drive the verdict.
+   - If fewer than 2 papers have relevance_score >= 4, set overall_confidence to LOW
+     and strongly consider INSUFFICIENT_EVIDENCE.
+
+3. Among RELEVANT papers (score >= 4), count by verdict:
    - Supporting (SUPPORTS + PARTIALLY_SUPPORTS): how many?
    - Contradicting (CONTRADICTS): how many?
    - Neutral/Unclear (NEUTRAL + INSUFFICIENT_DATA): how many?
 
-3. Weigh evidence quality, not just quantity:
+4. Weigh evidence quality, not just quantity:
    - HIGH confidence papers count more than LOW confidence.
-   - High relevance_score papers count more.
-   - One strong contradicting paper can outweigh several weak supports.
+   - One strong contradicting paper (HIGH conf, high relevance) can outweigh several weak supports.
    - PARTIALLY_SUPPORTS papers from different populations carry less weight.
-   - Check that individual paper verdicts are consistent with the claim's direction.
-     If a paper is labeled SUPPORTS but its key_finding actually opposes the claim's
+   - Check that individual paper verdicts are consistent with the claim’s direction.
+     If a paper is labeled SUPPORTS but its key_finding actually opposes the claim’s
      direction, treat it as CONTRADICTS in your synthesis.
 
-4. Apply these verdict rules in order:
+5. Apply these verdict rules in order (based ONLY on relevant papers):
    SUPPORTED            → Clear majority of relevant papers confirm the claim in the SAME
                           direction. Evidence is direct and from the same population.
    PARTIALLY_SUPPORTED  → More support than contradiction, but evidence has caveats, population
-                          differences, or limited scope. When uncertain, use this over SUPPORTED.
-   CONTRADICTED         → Majority of relevant papers oppose the claim in the same direction,
-                          or key high-quality papers directly refute it in the same population.
-                          Also use if the balance is ambiguous but the claim makes a strong
-                          absolute assertion not backed by most papers.
-   MIXED                → Roughly equal evidence on both sides, genuine scientific debate.
-   INSUFFICIENT_EVIDENCE→ LAST RESORT. Use ONLY if fewer than 2 papers have a concrete verdict
-                          (SUPPORTS / PARTIALLY_SUPPORTS / CONTRADICTS). NEUTRAL papers do NOT
-                          count as evidence. Never use if 2+ papers have a real verdict.
+                          differences, or limited scope. When uncertain, prefer this over SUPPORTED.
+   CONTRADICTED         → Majority of RELEVANT papers oppose the claim in the same direction,
+                          or key high-quality relevant papers directly refute it.
+   MIXED                → Roughly equal evidence on both sides among relevant papers;
+                          genuine scientific debate.
+   INSUFFICIENT_EVIDENCE→ Use when fewer than 2 relevant papers (score >= 4) have a concrete
+                          verdict (SUPPORTS / PARTIALLY_SUPPORTS / CONTRADICTS). If most papers
+                          are off-topic (low relevance_score), this is likely the right choice.
 
-5. When relevant papers are a small fraction of total papers analysed, note it in
-   verdict_explanation (e.g. "Only 3 of 15 papers directly addressed the claim").
-   Adjust confidence accordingly — but still commit to the most accurate verdict.
-6. Translate non-English claims before evaluating.
-7. Specific numbers/dosages not confirmed by any paper → CONTRADICTED or PARTIALLY_SUPPORTED.
+6. Confidence calibration:
+   HIGH   → ≥3 relevant HIGH-confidence papers agree; little contradiction among relevant papers.
+   MEDIUM → 2 relevant papers, or mixed quality, or partially-relevant populations.
+   LOW    → Fewer than 2 relevant papers, or evidence is highly mixed among relevant papers.
+   → IMPORTANT: If the verdict is based on ≤2 relevant papers out of many total papers,
+     the confidence MUST be LOW or MEDIUM, never HIGH.
 
-8. Overall confidence:
-   HIGH   → Multiple HIGH-confidence direct papers agree; little contradiction.
-   MEDIUM → Evidence is mostly indirect, mixed quality, or from partially-relevant populations.
-   LOW    → Very few relevant papers, most are NEUTRAL/INSUFFICIENT, or evidence is highly mixed.
+7. Note in verdict_explanation how many relevant papers (score >= 4) vs total papers were found.
+   Example: "Only 2 of 10 papers had relevance_score ≥ 4 and directly tested the claim."
+8. Translate non-English claims before evaluating.
+9. Specific numbers/dosages not confirmed by any relevant paper → CONTRADICTED or PARTIALLY_SUPPORTED.
 
 ━━━ OUTPUT FORMAT ━━━
 Return ONLY a raw JSON object. No markdown. No code fences.
 Required keys:
   "overall_verdict"     : one of SUPPORTED | PARTIALLY_SUPPORTED | CONTRADICTED | MIXED | INSUFFICIENT_EVIDENCE
   "overall_confidence"  : one of HIGH | MEDIUM | LOW
-  "verdict_explanation" : 3 sentences — synthesize the evidence, cite 2-3 paper titles by name
-  "supporting_count"    : integer
-  "contradicting_count" : integer
-  "neutral_count"       : integer
+  "verdict_explanation" : 3 sentences — synthesize the evidence, mention relevant paper count vs total,
+                          cite 1-2 paper titles by name
+  "supporting_count"    : integer (relevant papers only, score >= 4)
+  "contradicting_count" : integer (relevant papers only, score >= 4)
+  "neutral_count"       : integer (all papers with score < 4 or NEUTRAL/INSUFFICIENT_DATA verdict)
 """
 
 _LITERATURE_REVIEW = """\
@@ -601,19 +626,20 @@ class PaperAnalyzer:
         for paper, analysis in results:
             lines.append(
                 "Paper: " + paper.get("title", "Unknown") + "\n"
-                "  Verdict: "     + analysis.get("verdict",     "N/A") + "\n"
-                "  Confidence: "  + analysis.get("confidence",  "N/A") + "\n"
-                "  Key Finding: " + analysis.get("key_finding", "N/A") + "\n"
-                "  Evidence: "    + analysis.get("evidence",    "N/A") + "\n"
-                "  Explanation: " + analysis.get("explanation", "N/A")
+                "  Verdict: "        + analysis.get("verdict",         "N/A") + "\n"
+                "  Confidence: "     + analysis.get("confidence",      "N/A") + "\n"
+                "  Relevance Score: " + str(analysis.get("relevance_score", 0)) + "/10\n"
+                "  Key Finding: "    + analysis.get("key_finding",     "N/A") + "\n"
+                "  Evidence: "       + analysis.get("evidence",        "N/A") + "\n"
+                "  Explanation: "    + analysis.get("explanation",     "N/A")
             )
         fallback = {
             "overall_verdict": "MIXED",
             "overall_confidence": "LOW",
             "verdict_explanation": "Could not synthesize automatically.",
-            "supporting_count":    sum(1 for _, a in results if a.get("verdict") in {"SUPPORTS", "PARTIALLY_SUPPORTS"}),
-            "contradicting_count": sum(1 for _, a in results if a.get("verdict") == "CONTRADICTS"),
-            "neutral_count":       sum(1 for _, a in results if a.get("verdict") in {"NEUTRAL", "INSUFFICIENT_DATA"}),
+            "supporting_count":    sum(1 for _, a in results if a.get("verdict") in {"SUPPORTS", "PARTIALLY_SUPPORTS"} and _safe_int(a.get("relevance_score")) >= 4),
+            "contradicting_count": sum(1 for _, a in results if a.get("verdict") == "CONTRADICTS" and _safe_int(a.get("relevance_score")) >= 4),
+            "neutral_count":       sum(1 for _, a in results if a.get("verdict") in {"NEUTRAL", "INSUFFICIENT_DATA"} or _safe_int(a.get("relevance_score")) < 4),
         }
         prompt = _OVERALL_VERDICT.format(claim=claim, analyses_text="\n\n".join(lines))
         return self._norm_overall(self._parse(self._llm(prompt, temperature=0.1), fallback))
