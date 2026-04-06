@@ -9,18 +9,26 @@ from openai import OpenAI
 logger = logging.getLogger(__name__)
 
 # ═══════════════════════════════════════════════════════════════════════════════
-#  PROMPTS — V5 (2-pass chain-of-thought architecture)
+#  PROMPTS — V5.1 (2-pass chain-of-thought, A/B anchor fix)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 # ---------------------------------------------------------------------------
-# PASS 1 — Factual extraction (no judgment)
-# Goal : lock down WHAT the paper says before any claim comparison.
-# ~350 tokens of instructions. Short, focused, no examples needed.
+# PASS 1 — Factual extraction WITH claim-based A/B anchor
+# FIX v5.1: claim is provided ONLY to let the LLM assign A and B correctly.
+#            Judgment is still forbidden here.
+# max_tokens bumped to 600 to avoid truncated JSON on complex abstracts.
 # ---------------------------------------------------------------------------
 _PAPER_EXTRACT = """\
 You are a scientific fact extractor. Read the abstract below and return a \
-JSON object with four fields. Do NOT evaluate any claim. Do NOT express any opinion. \
+JSON object with four fields. Do NOT evaluate whether the claim is true or false. \
 Only report what the abstract explicitly states.
+
+CLAIM (use only to identify A and B — do NOT judge it yet):
+  {claim}
+
+From the claim above:
+  A = the entity the claim favours / asserts is better / more effective.
+  B = the entity the claim says is worse / less effective / being outperformed.
 
 PAPER:
   Title:    {title}
@@ -35,12 +43,13 @@ Required JSON fields:
 in one sentence. Quote verbatim if possible, otherwise paraphrase tightly. \
 Do NOT include author opinions or implications — only the measured result.
 
-  "direction"    : The comparative direction the data shows. Choose exactly one:
-    "A_beats_B"    → the paper’s primary subject outperforms the comparison.
-    "B_beats_A"    → the comparison outperforms the primary subject.
-    "no_difference"→ the paper shows no significant difference, no speedup,
+  "direction"    : The comparative direction the data shows, relative to A and B \
+as defined from the claim above. Choose exactly one:
+    "A_beats_B"    → paper's data shows A outperforms B.
+    "B_beats_A"    → paper's data shows B outperforms A.
+    "no_difference"→ paper shows no significant difference, no speedup,
                       no advantage, comparable results, or failed to find an effect.
-    "no_comparison"→ the paper does not directly compare two systems/groups.
+    "no_comparison"→ paper does not directly compare A and B.
 
   "conditions"   : Any scope limitations on the result (specific task, hardware,
  population, circuit type, time window, dose). Write "none" if the result is general.
@@ -53,8 +62,7 @@ Return ONLY a raw JSON object. No markdown, no code fences, no extra text.
 
 # ---------------------------------------------------------------------------
 # PASS 2 — Verdict (judgment only, extraction already done)
-# Goal : compare the locked finding against the claim. Short, sharp rules.
-# ~400 tokens of instructions.
+# Unchanged logic from V5 — short, sharp rules.
 # ---------------------------------------------------------------------------
 _PAPER_VERDICT = """\
 You are an academic evidence analyst. A factual extraction has already been done \
@@ -71,12 +79,11 @@ EXTRACTED FINDING:
 
 ━━━ DECISION RULES ━━━
 
-First, identify the claim’s direction:
-  Subject A = the entity the claim favours.
-  Object  B = the entity the claim says is worse/less/ineffective.
-  Direction = A > B, A causes B, A prevents B, etc.
+The claim's direction is already encoded in the "direction" field:
+  A = the entity the claim favours.
+  B = the entity the claim says is worse.
 
-Then apply these rules IN ORDER — stop at the first that matches:
+Apply these rules IN ORDER — stop at the first that matches:
 
 1. OFF-TOPIC
    The paper does not study the same phenomenon as the claim.
@@ -86,10 +93,10 @@ Then apply these rules IN ORDER — stop at the first that matches:
    The paper failed to show B outperforms A, or found no significant difference.
    When claim says A > B:
    → SUPPORTS if no conditions, or PARTIALLY_SUPPORTS if narrow conditions.
-   CRITICAL: This is NOT CONTRADICTS. Absence of B’s advantage = support for A’s claim.
+   CRITICAL: This is NOT CONTRADICTS. Absence of B's advantage = support for A's claim.
 
 3. B GENUINELY BEATS A (direction = "B_beats_A")
-   The paper’s data shows B > A.
+   The paper's data shows B > A.
    When claim says A > B:
    → CONTRADICTS if same general context.
    → PARTIALLY_SUPPORTS if conditions are very narrow (single task type, specific hardware,
@@ -119,12 +126,12 @@ Required keys:
   "verdict"        : SUPPORTS | PARTIALLY_SUPPORTS | CONTRADICTS | NEUTRAL | INSUFFICIENT_DATA
   "confidence"     : HIGH | MEDIUM | LOW
   "relevance_score": integer 0-10
-  "explanation"    : 2 sentences — (1) state the paper’s direction explicitly,
+  "explanation"    : 2 sentences — (1) state the paper's direction explicitly,
                      (2) explain whether that matches or opposes the claim direction.
 """
 
 # ---------------------------------------------------------------------------
-# Other prompts (unchanged from V4)
+# Other prompts (unchanged from V5)
 # ---------------------------------------------------------------------------
 
 _QUERY_TRANSFORM = """\
@@ -344,6 +351,27 @@ def _is_vague_claim(claim: str) -> bool:
     return not bool(_VERB_RE.search(claim))
 
 # ═══════════════════════════════════════════════════════════════════════════════
+#  EMPTY EXTRACTION SENTINEL VALUES
+# ═══════════════════════════════════════════════════════════════════════════════
+
+_EMPTY_FINDINGS = {
+    "",
+    "n/a",
+    "not available",
+    "could not extract finding.",
+    "could not extract finding",
+    "no finding",
+    "none",
+    "unknown",
+}
+
+def _is_empty_extraction(extraction: dict) -> bool:
+    """Return True if Pass 1 produced no usable finding — short-circuit to INSUFFICIENT_DATA."""
+    finding = str(extraction.get("main_finding") or "").strip().lower()
+    quote   = str(extraction.get("evidence_quote") or "").strip()
+    return finding in _EMPTY_FINDINGS or (len(finding) < 20 and not quote)
+
+# ═══════════════════════════════════════════════════════════════════════════════
 #  MODEL ROTATOR
 # ═══════════════════════════════════════════════════════════════════════════════
 
@@ -519,7 +547,12 @@ class PaperAnalyzer:
         return [user_input]
 
     def analyze_paper(self, paper: dict, claim: str) -> dict:
-        """2-pass chain-of-thought: extract finding first, then judge against claim."""
+        """V5.1 — 2-pass chain-of-thought with 4 fixes:
+           1. Pass 1 receives the claim for A/B anchor (not for judgment).
+           2. Empty/failed extraction short-circuits to INSUFFICIENT_DATA — no Pass 2.
+           3. max_tokens 600 in Pass 1 to avoid JSON truncation on long abstracts.
+           4. direction enum sanitised before Pass 2.
+        """
         abstract = (paper.get("abstract") or "").strip()
         if len(abstract) < 80:
             return self._norm_analysis({
@@ -537,6 +570,7 @@ class PaperAnalyzer:
             authors = _author_str(paper),
             abstract= abstract[:2500],
             tldr    = tldr_text,
+            claim   = claim,   # FIX 1: claim forwarded to Pass 1 for A/B anchoring
         )
 
         extract_fallback = {
@@ -550,19 +584,32 @@ class PaperAnalyzer:
             "relevance_score": 1, "explanation": "LLM analysis failed.",
         }
 
-        # --- Pass 1: factual extraction ---
+        # ── Pass 1: factual extraction (max_tokens 600 to prevent truncation) ──
         try:
-            raw1       = self._llm(_PAPER_EXTRACT.format(**common), temperature=0.1, max_tokens=400)
+            raw1       = self._llm(_PAPER_EXTRACT.format(**common), temperature=0.1, max_tokens=600)  # FIX 3
             extraction = self._parse(raw1, extract_fallback)
         except Exception as exc:
             logger.error("Pass 1 failed for '%s': %s", common["title"], exc)
             extraction = extract_fallback
 
-        # Sanitise direction field
+        # FIX 4: sanitise direction enum
         if extraction.get("direction") not in self.VALID_DIRECTIONS:
             extraction["direction"] = "no_comparison"
 
-        # --- Pass 2: verdict ---
+        # FIX 2: short-circuit if extraction is empty — never infer SUPPORTS from nothing
+        if _is_empty_extraction(extraction):
+            logger.warning("Empty extraction for '%s' — skipping Pass 2.", common["title"])
+            return self._norm_analysis({
+                "verdict": "INSUFFICIENT_DATA", "confidence": "LOW", "relevance_score": 0,
+                "evidence": extraction.get("evidence_quote") or "No evidence could be extracted.",
+                "explanation": (
+                    "Pass 1 returned no usable finding. "
+                    "The abstract is likely too short, not in English, or behind a paywall."
+                ),
+                "key_finding": "Could not extract finding.",
+            })
+
+        # ── Pass 2: verdict reasoning ──
         try:
             raw2   = self._llm(
                 _PAPER_VERDICT.format(
@@ -579,7 +626,6 @@ class PaperAnalyzer:
             logger.error("Pass 2 failed for '%s': %s", common["title"], exc)
             verdict_data = verdict_fallback
 
-        # Merge extraction fields into final result for display
         merged = {
             **verdict_data,
             "evidence":    extraction.get("evidence_quote") or "No evidence found.",
