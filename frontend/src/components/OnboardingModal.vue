@@ -125,22 +125,22 @@ const features = [
   {
     icon: '🧪',
     name: 'Claim Verifier',
-    desc: 'Entre une affirmation scientifique. L'outil cherche des papers, les analyse et rend un verdict global avec les détails par paper.'
+    desc: "Entre une affirmation scientifique. L'outil cherche des papers, les analyse et rend un verdict global avec les détails par paper."
   },
   {
     icon: '📚',
     name: 'Literature Review',
-    desc: 'Entre un sujet ou topic. Génère une synthèse structurée de la littérature récente sous forme de revue académique.'
+    desc: "Entre un sujet ou topic. Génère une synthèse structurée de la littérature récente sous forme de revue académique."
   },
   {
     icon: '🔍',
     name: 'Paper Search',
-    desc: 'Cherche des papers directement par mots-clés sur Semantic Scholar. Utile pour explorer un domaine sans claim précis.'
+    desc: "Cherche des papers directement par mots-clés sur Semantic Scholar. Utile pour explorer un domaine sans claim précis."
   },
   {
     icon: '💬',
     name: 'Paper Chat',
-    desc: 'Pose des questions à un paper spécifique. Le LLM répond en se basant strictement sur l'abstract fourni.'
+    desc: "Pose des questions à un paper spécifique. Le LLM répond en se basant strictement sur l'abstract fourni."
   },
 ]
 
@@ -148,37 +148,36 @@ const risks = [
   {
     emoji: '🎰',
     title: 'Biais de sélection des papers',
-    desc: 'Semantic Scholar retourne les papers les plus cités pour les requêtes générées. Des études importantes mais récentes ou peu citées peuvent être manquées.'
+    desc: "Semantic Scholar retourne les papers les plus cités pour les requêtes générées. Des études importantes mais récentes ou peu citées peuvent être manquées."
   },
   {
     emoji: '🔒',
     title: 'Abstracts manquants (paywall)',
-    desc: 'Environ 30–40 % des papers ont leur abstract indisponible via API. Ces papers apparaissent en INSUFFICIENT ou NEUTRAL — non pas parce qu'ils sont hors sujet, mais parce que le contenu n'est pas accessible.'
+    desc: "Environ 30–40 % des papers ont leur abstract indisponible via API. Ces papers apparaissent en INSUFFICIENT ou NEUTRAL — non pas parce qu'ils sont hors sujet, mais parce que le contenu n'est pas accessible."
   },
   {
     emoji: '🤖',
-    title: 'Erreurs d'interprétation du LLM',
-    desc: 'Le LLM peut mal identifier A et B pour des claims ambigus, sur-généraliser un résultat étroit, ou classer CONTRADICTS un paper dont le scope est très restreint. Toujours lire l'explication et vérifier le paper source.'
+    title: "Erreurs d'interprétation du LLM",
+    desc: "Le LLM peut mal identifier A et B pour des claims ambigus, sur-généraliser un résultat étroit, ou classer CONTRADICTS un paper dont le scope est très restreint. Toujours lire l'explication et vérifier le paper source."
   },
   {
     emoji: '📊',
-    title: 'Le verdict global n'est pas une méta-analyse',
-    desc: 'Le verdict SUPPORTED/CONTRADICTED est une synthèse qualitative, pas une méta-analyse statistique. Des papers de qualité inégale comptent autant dans le décompte brut.'
+    title: "Le verdict global n'est pas une méta-analyse",
+    desc: "Le verdict SUPPORTED/CONTRADICTED est une synthèse qualitative, pas une méta-analyse statistique. Des papers de qualité inégale comptent autant dans le décompte brut."
   },
 ]
 
 const limitations = [
-  'Les requêtes sont générées en anglais. Un claim en français sera traduit, ce qui peut introduire des nuances perdues.',
-  'Seuls les abstracts sont analysés — pas les corps des articles. Un résultat mentionné uniquement dans les résultats détaillés sera invisible.',
-  'Le score de pertinence (0–10) est une estimation LLM, pas un calcul statistique rigoureux.',
-  'Les papers très récents (< 6 mois) sont sous-représentés car peu indexés et peu cités.',
-  'Les comparaisons A vs B très générales ("Traditional CS vs Quantum CS") couvrent un spectre trop large — les papers trouvés portent souvent sur des sous-domaines spécifiques, pas la question globale.',
-  'Le mode Fast (5 papers) donne une vue partielle. Utiliser Deep (15 papers) pour les sujets controversés.',
+  "Les requêtes sont générées en anglais. Un claim en français sera traduit, ce qui peut introduire des nuances perdues.",
+  "Seuls les abstracts sont analysés — pas les corps des articles. Un résultat mentionné uniquement dans les résultats détaillés sera invisible.",
+  "Le score de pertinence (0–10) est une estimation LLM, pas un calcul statistique rigoureux.",
+  "Les papers très récents (< 6 mois) sont sous-représentés car peu indexés et peu cités.",
+  "Les comparaisons A vs B très générales couvrent un spectre trop large — les papers trouvés portent souvent sur des sous-domaines spécifiques, pas la question globale.",
+  "Le mode Fast (5 papers) donne une vue partielle. Utiliser Deep (15 papers) pour les sujets controversés.",
 ]
 
 function close() {
   if (dontShow.value) {
-    // Store in a module-level variable (no localStorage in sandboxed env)
     window.__evidenceFinderOnboardingSeen = true
   }
   visible.value = false
@@ -190,7 +189,6 @@ onMounted(() => {
   }
 })
 
-// Expose for manual trigger from parent
 defineExpose({ open: () => { visible.value = true } })
 </script>
 
