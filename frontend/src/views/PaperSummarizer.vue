@@ -37,7 +37,7 @@
     </div>
 
     <div v-if="papers.length && !loading" class="space-y-3">
-      <p class="text-xs text-muted mb-2">{{ papers.length }} results for "{{ lastQuery }}"</p>
+      <p class="text-xs text-muted mb-2">{{ papers.length }} results for &ldquo;{{ lastQuery }}&rdquo;</p>
       <div v-for="p in papers" :key="p.paperId" class="bg-surface border border-border rounded-xl p-5">
         <div class="flex gap-4">
           <div class="flex-1 min-w-0">
@@ -51,10 +51,18 @@
             </div>
             <p v-if="p.abstract" class="text-xs text-muted leading-relaxed line-clamp-3">{{ p.abstract }}</p>
           </div>
-          <button type="button" @click="toggleSummary(p)" :disabled="summaryLoading[p.paperId]"
-            class="shrink-0 self-start px-3 py-1.5 text-xs border border-border rounded-lg text-muted hover:text-white hover:border-accent/40 transition-all disabled:opacity-50">
-            {{ summaryLoading[p.paperId] ? '…' : summaries[p.paperId] ? 'Hide' : '✨ Summarize' }}
-          </button>
+
+          <!-- Action buttons -->
+          <div class="shrink-0 flex flex-col gap-2 self-start">
+            <button type="button" @click="openChat(p)"
+              class="px-3 py-1.5 text-xs border border-accent/30 bg-accent/10 text-accent hover:bg-accent/20 rounded-lg transition-all flex items-center gap-1.5">
+              💬 Chat
+            </button>
+            <button type="button" @click="toggleSummary(p)" :disabled="summaryLoading[p.paperId]"
+              class="px-3 py-1.5 text-xs border border-border rounded-lg text-muted hover:text-white hover:border-accent/40 transition-all disabled:opacity-50">
+              {{ summaryLoading[p.paperId] ? '…' : summaries[p.paperId] ? 'Hide' : '✨ Summarize' }}
+            </button>
+          </div>
         </div>
         <div v-if="summaries[p.paperId]" class="mt-4 bg-surface2 rounded-lg p-4 border border-border">
           <p class="text-xs font-semibold text-accent uppercase tracking-wider mb-2">AI Summary</p>
@@ -72,8 +80,10 @@
 
 <script setup>
 import { ref, reactive } from 'vue'
+import { useRouter } from 'vue-router'
 import { streamPost, summarizePaper } from '../api/index.js'
 
+const router     = useRouter()
 const query      = ref('')
 const maxPapers  = ref(10)
 const loading    = ref(false)
@@ -92,7 +102,6 @@ async function submit() {
   lastQuery.value = query.value
   progress.value  = 'Searching…'
 
-  // maxPapers est déjà un Number grâce à v-model.number
   const body = { topic: query.value, max_papers: maxPapers.value }
   console.log('[submit] body:', body)
 
@@ -111,5 +120,10 @@ async function toggleSummary(paper) {
   try { summaries[id] = await summarizePaper(paper) }
   catch(e) { summaries[id] = 'Error: ' + e.message }
   finally { summaryLoading[id] = false }
+}
+
+// Passe le paper complet dans le state du router — pas d'ID à connaître
+function openChat(paper) {
+  router.push({ name: 'chat', state: { paper: JSON.stringify(paper) } })
 }
 </script>
