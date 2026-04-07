@@ -85,13 +85,9 @@ def _fetch_papers(
     year: Optional[str],
     exclude_ids: Optional[set] = None,
 ) -> list:
-    """
-    Fetch papers from Semantic Scholar (or cache) for the given queries.
-    exclude_ids: set of paperIds to skip (used during retry rounds).
-    """
-    per_query    = max(max_papers, 15)
-    seen         = set(exclude_ids or [])
-    papers       = []
+    per_query = max(max_papers, 15)
+    seen      = set(exclude_ids or [])
+    papers    = []
     for q in queries:
         cached = cache.get_search(q, year)
         batch  = cached if cached else scholar.search(q, limit=per_query, year=year or None)
@@ -106,21 +102,14 @@ def _fetch_papers(
     return papers[:max_papers]
 
 
-# Retry query suffixes — used when the first round yields too few relevant papers
 _RETRY_SUFFIXES = [
     ["systematic review", "meta-analysis"],
     ["randomized controlled trial", "cohort study"],
 ]
 
-
 def _enrich_queries(base_queries: list, round_idx: int) -> list:
-    """Append retry suffixes to base queries to surface different papers."""
     suffixes = _RETRY_SUFFIXES[round_idx % len(_RETRY_SUFFIXES)]
-    enriched = []
-    for q in base_queries:
-        for sfx in suffixes:
-            enriched.append(f"{q} {sfx}")
-    return enriched
+    return [f"{q} {sfx}" for q in base_queries for sfx in suffixes]
 
 
 # ── Request models ────────────────────────────────────────────────────────────────
@@ -177,7 +166,6 @@ def verify_claim(req: ClaimRequest):
             yield _sse("papers", {"data": papers})
             yield _sse("progress", {"message": f"Analysing {len(papers)} papers…", "step": 3, "total": 4})
 
-            # ── First analysis pass ───────────────────────────────────────────
             all_results: list[tuple] = []
             seen_ids: set = {p.get("paperId", "") for p in papers}
 
@@ -187,12 +175,15 @@ def verify_claim(req: ClaimRequest):
                 analysis = cached if cached else analyzer.analyze_paper(paper, req.claim)
                 if not cached and pid:
                     cache.set_analysis(pid, req.claim, analysis)
-                yield _sse("analysis", {"index": i, "total": len(papers), "paper_id": pid, "analysis": analysis})
+                # paper included in every event so frontend never needs paperPool lookup
+                yield _sse("analysis", {
+                    "index": i, "total": len(papers),
+                    "paper_id": pid, "paper": paper, "analysis": analysis,
+                })
                 all_results.append((paper, analysis))
 
-            # ── Relevance filter + single retry round ─────────────────────────
             MIN_SCORE   = 3
-            MAX_RETRIES = 1  # one extra round max to avoid analysing 3× max_papers
+            MAX_RETRIES = 1
             relevant    = [(p, a) for p, a in all_results if a.get("relevance_score", 0) >= MIN_SCORE]
 
             retry_round = 0
@@ -202,16 +193,17 @@ def verify_claim(req: ClaimRequest):
                     "message": f"Only {len(relevant)} relevant papers found — searching deeper…",
                     "step": 3, "total": 4,
                 })
-                retry_queries = _enrich_queries(base_queries, retry_round - 1)
-                extra_papers  = _fetch_papers(retry_queries, req.max_papers, req.year_filter, exclude_ids=seen_ids)
-
+                extra_papers = _fetch_papers(
+                    _enrich_queries(base_queries, retry_round - 1),
+                    req.max_papers, req.year_filter, exclude_ids=seen_ids,
+                )
                 if not extra_papers:
                     break
 
                 for paper in extra_papers:
                     pid    = paper.get("paperId", "")
                     seen_ids.add(pid)
-                    cached = cache.get_analysis(pid, req.claim)
+                    cached   = cache.get_analysis(pid, req.claim)
                     analysis = cached if cached else analyzer.analyze_paper(paper, req.claim)
                     if not cached and pid:
                         cache.set_analysis(pid, req.claim, analysis)
@@ -219,13 +211,13 @@ def verify_claim(req: ClaimRequest):
                         "index":    len(all_results),
                         "total":    len(all_results) + len(extra_papers),
                         "paper_id": pid,
+                        "paper":    paper,   # <-- fix: always ship the full paper object
                         "analysis": analysis,
                     })
                     all_results.append((paper, analysis))
                     if analysis.get("relevance_score", 0) >= MIN_SCORE:
                         relevant.append((paper, analysis))
 
-            # ── Low-relevance disclaimer ──────────────────────────────────────
             if len(relevant) < req.max_papers:
                 yield _sse("warning", {
                     "message": (
@@ -275,12 +267,14 @@ def literature_review(req: TopicRequest):
                 analysis = cached if cached else analyzer.analyze_paper(paper, req.topic)
                 if not cached and pid:
                     cache.set_analysis(pid, req.topic, analysis)
-                yield _sse("analysis", {"index": i, "total": len(papers), "paper_id": pid, "analysis": analysis})
+                yield _sse("analysis", {
+                    "index": i, "total": len(papers),
+                    "paper_id": pid, "paper": paper, "analysis": analysis,
+                })
                 all_results.append((paper, analysis))
 
-            # ── Single retry round for review ─────────────────────────────────
             MIN_SCORE   = 3
-            MAX_RETRIES = 1  # one extra round max
+            MAX_RETRIES = 1
             relevant    = [(p, a) for p, a in all_results if a.get("relevance_score", 0) >= MIN_SCORE]
             retry_round = 0
 
@@ -307,6 +301,7 @@ def literature_review(req: TopicRequest):
                         "index":    len(all_results),
                         "total":    len(all_results) + len(extra_papers),
                         "paper_id": pid,
+                        "paper":    paper,   # <-- fix
                         "analysis": analysis,
                     })
                     all_results.append((paper, analysis))
@@ -390,7 +385,6 @@ async def fetch_paper(req: FetchPaperRequest):
         }
 
     text, source = fetch_full_text(paper)
-
     if pid and text:
         _text_cache[pid] = (text, source)
 

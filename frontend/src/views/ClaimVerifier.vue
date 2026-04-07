@@ -97,9 +97,8 @@
     </div>
 
     <!-- Loading skeletons -->
-    <div v-if="loading && paperPool.length && !results.length" class="space-y-3">
-      <div v-for="i in Math.min(paperPool.length, 3)" :key="i"
-        class="shimmer rounded-xl h-20 border border-border"></div>
+    <div v-if="loading && !results.length" class="space-y-3">
+      <div v-for="i in 3" :key="i" class="shimmer rounded-xl h-20 border border-border"></div>
     </div>
 
     <!-- Empty state -->
@@ -125,9 +124,8 @@ const loading      = ref(false)
 const progressMsg  = ref('Starting…')
 const progressPct  = ref(0)
 const verdict      = ref(null)
-const warningMsg   = ref('')   // low-relevance disclaimer from backend
-const results      = ref([])
-const paperPool    = ref([])
+const warningMsg   = ref('')
+const results      = ref([])   // { paper, analysis }[]
 const activeFilter = ref('ALL')
 const copiedAll    = ref(false)
 
@@ -154,10 +152,8 @@ const verdictStyle = computed(() =>
   VERDICT_STYLES[verdict.value?.overall_verdict] || VERDICT_STYLES.MIXED
 )
 
-// ── Clear cache event (fired by App.vue after DELETE /api/cache) ──────────────
 function clearLocalState() {
   results.value      = []
-  paperPool.value    = []
   verdict.value      = null
   warningMsg.value   = ''
   progressPct.value  = 0
@@ -190,15 +186,20 @@ async function submit() {
       if (e.step && e.total) progressPct.value = Math.round((e.step / e.total) * 85)
     },
     onPapers(papers) {
-      paperPool.value   = papers
       progressMsg.value = `Analysing ${papers.length} papers…`
       progressPct.value = 15
     },
     onAnalysis(e) {
       progressMsg.value = `Paper ${(e.index ?? 0) + 1} / ${e.total}`
       progressPct.value = 15 + Math.round(((e.index + 1) / e.total) * 75)
-      const paper = paperPool.value.find(p => p.paperId === e.paper_id)
-      if (paper && e.analysis) results.value.push({ paper, analysis: e.analysis })
+
+      // Backend always ships e.paper — no more paperPool lookup needed
+      const paper = e.paper
+      if (paper && e.analysis) {
+        // Avoid duplicates (cache hit may re-emit same paperId)
+        const already = results.value.some(r => r.paper.paperId === paper.paperId)
+        if (!already) results.value.push({ paper, analysis: e.analysis })
+      }
     },
     onVerdict(v) { verdict.value = v },
     onWarning(e) { warningMsg.value = e.message },
