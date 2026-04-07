@@ -104,11 +104,13 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { streamPost } from '../api/index.js'
 import { historyStore } from '../stores/history.js'
 import PaperCard from '../components/PaperCard.vue'
 
+const route        = useRoute()
 const claim        = ref('')
 const depth        = ref('10')
 const loading      = ref(false)
@@ -136,20 +138,46 @@ const VERDICT_STYLES = {
   SUPPORTED:             { icon: '✅', label: 'Claim Supported',      color: 'text-emerald-400', bg: 'bg-emerald-500/5  border-emerald-500/20', barColor: '#22c55e' },
   PARTIALLY_SUPPORTED:   { icon: '⚡', label: 'Partially Supported',   color: 'text-amber-400',   bg: 'bg-amber-500/5    border-amber-500/20',   barColor: '#f59e0b' },
   CONTRADICTED:          { icon: '❌', label: 'Claim Contradicted',     color: 'text-red-400',     bg: 'bg-red-500/5      border-red-500/20',     barColor: '#ef4444' },
-  INSUFFICIENT_EVIDENCE: { icon: '❓', label: 'Insufficient Evidence',  color: 'text-gray-400',   bg: 'bg-gray-500/5     border-gray-500/20',    barColor: '#6b7280' },
+  INSUFFICIENT_EVIDENCE: { icon: '❓', label: 'Insufficient Evidence',  color: 'text-gray-400',    bg: 'bg-gray-500/5     border-gray-500/20',    barColor: '#6b7280' },
   MIXED:                 { icon: '🔀', label: 'Mixed Evidence',         color: 'text-purple-400',  bg: 'bg-purple-500/5   border-purple-500/20',  barColor: '#a855f7' },
 }
 const verdictStyle = computed(() =>
   VERDICT_STYLES[verdict.value?.overall_verdict] || VERDICT_STYLES.MIXED
 )
 
+// ── Clear cache event ─────────────────────────────────────────────────────────
+function clearLocalState() {
+  results.value     = []
+  paperPool.value   = []
+  verdict.value     = null
+  progressPct.value = 0
+  progressMsg.value = 'Starting…'
+  activeFilter.value = 'ALL'
+}
+
+function onClearCache() { clearLocalState() }
+
+onMounted(() => {
+  window.addEventListener('aef:clear-cache', onClearCache)
+
+  // Pre-fill from history reuse: ?q=...&autorun=1
+  const q = route.query.q
+  if (q) {
+    claim.value = q
+    if (route.query.autorun === '1') submit()
+  }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('aef:clear-cache', onClearCache)
+})
+// ─────────────────────────────────────────────────────────────────────────────
+
 async function submit() {
   if (!claim.value.trim() || loading.value) return
   loading.value = true
-  results.value = []
-  paperPool.value = []
-  verdict.value = null
-  progressPct.value = 0
+  clearLocalState()
+  loading.value = true  // re-set after clearLocalState
   progressMsg.value = 'Searching literature…'
 
   await streamPost('/api/verify', { claim: claim.value, max_papers: +depth.value }, {
@@ -157,24 +185,17 @@ async function submit() {
       progressMsg.value = e.message
       if (e.step && e.total) progressPct.value = Math.round((e.step / e.total) * 85)
     },
-
-    // Backend envoie la liste complète ici → on la stocke
     onPapers(papers) {
       paperPool.value = papers
       progressMsg.value = `Analysing ${papers.length} papers…`
       progressPct.value = 15
     },
-
-    // Backend envoie: { type:"analysis", index:i, total:N, paper_id:pid, analysis:{...} }
     onAnalysis(e) {
       progressMsg.value = `Paper ${(e.index ?? 0) + 1} / ${e.total}`
       progressPct.value = 15 + Math.round(((e.index + 1) / e.total) * 75)
       const paper = paperPool.value.find(p => p.paperId === e.paper_id)
-      if (paper && e.analysis) {
-        results.value.push({ paper, analysis: e.analysis })
-      }
+      if (paper && e.analysis) results.value.push({ paper, analysis: e.analysis })
     },
-
     onVerdict(v) { verdict.value = v },
     onDone() {
       progressPct.value = 100

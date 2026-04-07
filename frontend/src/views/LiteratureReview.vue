@@ -86,10 +86,13 @@
 </template>
 
 <script setup>
-import { ref, computed } from 'vue'
+import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { useRoute } from 'vue-router'
 import { streamPost } from '../api/index.js'
+import { historyStore } from '../stores/history.js'
 import PaperCard from '../components/PaperCard.vue'
 
+const route       = useRoute()
 const topic       = ref('')
 const maxPapers   = ref(10)
 const loading     = ref(false)
@@ -120,14 +123,37 @@ const sections = computed(() => {
   }).filter(s => s.title && s.content)
 })
 
-async function submit() {
-  if (!topic.value.trim() || loading.value) return
-  loading.value   = true
-  reviewRaw.value = null
-  papers.value    = []
-  error.value     = ''
+// ── Clear cache event ─────────────────────────────────────────────────────────
+function clearLocalState() {
+  reviewRaw.value   = null
+  papers.value      = []
+  error.value       = ''
   progressPct.value = 0
   progressMsg.value = 'Searching literature…'
+}
+
+function onClearCache() { clearLocalState() }
+
+onMounted(() => {
+  window.addEventListener('aef:clear-cache', onClearCache)
+
+  const q = route.query.q
+  if (q) {
+    topic.value = q
+    if (route.query.autorun === '1') submit()
+  }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('aef:clear-cache', onClearCache)
+})
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function submit() {
+  if (!topic.value.trim() || loading.value) return
+  loading.value = true
+  clearLocalState()
+  loading.value = true
 
   const rawPaperBuf = []
 
@@ -147,6 +173,7 @@ async function submit() {
     onDone()    {
       progressPct.value = 100
       loading.value = false
+      historyStore.add({ type: 'review', query: topic.value, path: '/review' })
       papers.value = rawPaperBuf.map(item => {
         if (item && item.paper) return item
         return { paper: item, analysis: { verdict: 'NEUTRAL', confidence: 'LOW', relevance_score: 0, evidence: '', explanation: '', key_finding: 'N/A' } }

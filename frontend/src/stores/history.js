@@ -16,6 +16,10 @@ export const historyStore = reactive({
   items: load(),
 
   add(entry) {
+    // Deduplicate: remove existing entry with same query + type
+    this.items = this.items.filter(
+      i => !(i.query === entry.query && i.type === entry.type)
+    )
     this.items.unshift({ ...entry, id: Date.now(), date: new Date().toISOString() })
     if (this.items.length > MAX) this.items = this.items.slice(0, MAX)
     save(this.items)

@@ -27,20 +27,48 @@
       </nav>
 
       <!-- History -->
-      <div v-if="historyStore.items.length" class="px-3 py-3 border-t border-border">
+      <div class="px-3 py-3 border-t border-border">
         <div class="flex items-center justify-between mb-2 px-1">
           <span class="text-xs font-semibold text-muted uppercase tracking-wider">History</span>
-          <button @click="historyStore.clear()" class="text-xs text-muted hover:text-white transition-colors">Clear</button>
+          <button
+            v-if="historyStore.items.length"
+            @click="historyStore.clear()"
+            title="Clear history"
+            class="text-xs text-muted hover:text-red-400 transition-colors">
+            Clear
+          </button>
         </div>
-        <div class="space-y-1 max-h-40 overflow-y-auto">
-          <div v-for="item in historyStore.items.slice(0,8)" :key="item.id"
-            class="px-2 py-1.5 rounded text-xs text-muted hover:text-white hover:bg-surface2 cursor-pointer truncate transition-colors"
+
+        <div v-if="historyStore.items.length" class="space-y-0.5 max-h-40 overflow-y-auto pr-0.5">
+          <div
+            v-for="item in historyStore.items.slice(0, 8)"
+            :key="item.id"
+            class="group flex items-center gap-1 px-2 py-1.5 rounded text-xs text-muted hover:text-white hover:bg-surface2 cursor-pointer transition-colors"
             @click="reuseHistory(item)"
             :title="item.query">
-            <span class="mr-1.5 opacity-60">{{ item.type === 'verify' ? '🧪' : item.type === 'review' ? '📚' : item.type === 'chat' ? '💬' : '🔍' }}</span>
-            {{ item.query }}
+            <span class="shrink-0 opacity-60">{{ typeIcon(item.type) }}</span>
+            <span class="truncate flex-1">{{ item.query }}</span>
+            <button
+              class="shrink-0 opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:text-red-400 transition-all ml-0.5"
+              title="Remove"
+              @click.stop="historyStore.remove(item.id)">
+              ×
+            </button>
           </div>
         </div>
+
+        <div v-else class="px-1 py-2 text-xs text-muted/50 italic">No history yet</div>
+      </div>
+
+      <!-- Clear cache button -->
+      <div class="px-3 pb-3">
+        <button
+          @click="clearCache"
+          :class="cacheCleared ? 'text-emerald-400 border-emerald-500/30' : 'text-muted hover:text-white hover:border-accent/30'"
+          class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium border border-border bg-surface2 transition-all duration-150">
+          <span>{{ cacheCleared ? '✓' : '🗑' }}</span>
+          {{ cacheCleared ? 'Cache cleared!' : 'Clear session cache' }}
+        </button>
       </div>
 
       <!-- Footer -->
@@ -77,23 +105,45 @@ import { useRouter, useRoute } from 'vue-router'
 import { historyStore } from './stores/history.js'
 import OnboardingModal from './components/OnboardingModal.vue'
 
-const router       = useRouter()
-const route        = useRoute()
+const router        = useRouter()
+const route         = useRoute()
 const onboardingRef = ref(null)
+const cacheCleared  = ref(false)
 
 const nav = [
-  { to: '/',       icon: '🧪', label: 'Claim Verifier'     },
-  { to: '/review', icon: '📚', label: 'Literature Review'  },
-  { to: '/search', icon: '🔍', label: 'Paper Search'       },
-  { to: '/chat',   icon: '💬', label: 'Paper Chat'         },
+  { to: '/',       icon: '🧪', label: 'Claim Verifier'    },
+  { to: '/review', icon: '📚', label: 'Literature Review' },
+  { to: '/search', icon: '🔍', label: 'Paper Search'      },
+  { to: '/chat',   icon: '💬', label: 'Paper Chat'        },
 ]
 
+function typeIcon(type) {
+  return type === 'verify' ? '🧪' : type === 'review' ? '📚' : type === 'chat' ? '💬' : '🔍'
+}
+
+/**
+ * Navigate to the right route AND pass the query so the view
+ * can pre-fill its input and auto-submit.
+ */
 function reuseHistory(item) {
-  router.push({ path: item.path, query: { q: item.query } })
+  router.push({
+    path:  item.path,
+    query: { q: item.query, autorun: '1' },
+  })
+}
+
+/**
+ * Clear session cache: dispatches a custom event that every view
+ * listens to in order to wipe its local results/state.
+ */
+function clearCache() {
+  window.dispatchEvent(new CustomEvent('aef:clear-cache'))
+  cacheCleared.value = true
+  setTimeout(() => { cacheCleared.value = false }, 2000)
 }
 </script>
 
 <style scoped>
 .fade-enter-active, .fade-leave-active { transition: opacity 0.15s ease; }
-.fade-enter-from, .fade-leave-to { opacity: 0; }
+.fade-enter-from,  .fade-leave-to      { opacity: 0; }
 </style>
