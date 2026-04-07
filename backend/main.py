@@ -79,14 +79,24 @@ def _sse(event_type: str, data: dict) -> str:
     payload = json.dumps({"type": event_type, **data}, ensure_ascii=False)
     return f"data: {payload}\n\n"
 
-def _fetch_papers(queries: list, max_papers: int, year: Optional[str]) -> list:
-    per_query = max(max_papers, 15)
-    seen, papers = set(), []
+def _fetch_papers(
+    queries: list,
+    max_papers: int,
+    year: Optional[str],
+    exclude_ids: Optional[set] = None,
+) -> list:
+    """
+    Fetch papers from Semantic Scholar (or cache) for the given queries.
+    exclude_ids: set of paperIds to skip (used during retry rounds).
+    """
+    per_query    = max(max_papers, 15)
+    seen         = set(exclude_ids or [])
+    papers       = []
     for q in queries:
-        cached = cache.get_search(q)
+        cached = cache.get_search(q, year)
         batch  = cached if cached else scholar.search(q, limit=per_query, year=year or None)
         if not cached and batch:
-            cache.set_search(q, batch)
+            cache.set_search(q, batch, year)
         for p in batch:
             pid = p.get("paperId", "")
             if pid and pid not in seen:
@@ -94,6 +104,24 @@ def _fetch_papers(queries: list, max_papers: int, year: Optional[str]) -> list:
                 papers.append(p)
     papers = sorted(papers, key=lambda p: p.get("citationCount") or 0, reverse=True)
     return papers[:max_papers]
+
+
+# Retry query suffixes — used when the first round yields too few relevant papers
+_RETRY_SUFFIXES = [
+    ["systematic review", "meta-analysis"],
+    ["randomized controlled trial", "cohort study"],
+]
+
+
+def _enrich_queries(base_queries: list, round_idx: int) -> list:
+    """Append retry suffixes to base queries to surface different papers."""
+    suffixes = _RETRY_SUFFIXES[round_idx % len(_RETRY_SUFFIXES)]
+    enriched = []
+    for q in base_queries:
+        for sfx in suffixes:
+            enriched.append(f"{q} {sfx}")
+    return enriched
+
 
 # ── Request models ────────────────────────────────────────────────────────────────
 class ClaimRequest(BaseModel):
@@ -134,17 +162,25 @@ def verify_claim(req: ClaimRequest):
                 yield _sse("verdict", {"data": early})
                 yield _sse("done", {})
                 return
-            yield _sse("progress", {"message": "Generating search queries\u2026", "step": 1, "total": 4})
-            queries = analyzer.transform_query(req.claim, topic_mode=False, max_papers=req.max_papers)
-            yield _sse("progress", {"message": "Searching literature\u2026", "step": 2, "total": 4})
-            papers = _fetch_papers(queries, req.max_papers, req.year_filter)
+
+            yield _sse("progress", {"message": "Generating search queries…", "step": 1, "total": 4})
+            base_queries = analyzer.transform_query(req.claim, topic_mode=False, max_papers=req.max_papers)
+
+            yield _sse("progress", {"message": "Searching literature…", "step": 2, "total": 4})
+            papers = _fetch_papers(base_queries, req.max_papers, req.year_filter)
+
             if not papers:
                 yield _sse("error", {"message": "No papers found. Try rephrasing."})
                 yield _sse("done", {})
                 return
+
             yield _sse("papers", {"data": papers})
-            yield _sse("progress", {"message": f"Analysing {len(papers)} papers\u2026", "step": 3, "total": 4})
-            results = []
+            yield _sse("progress", {"message": f"Analysing {len(papers)} papers…", "step": 3, "total": 4})
+
+            # ── First analysis pass ───────────────────────────────────────────
+            all_results: list[tuple] = []
+            seen_ids: set = {p.get("paperId", "") for p in papers}
+
             for i, paper in enumerate(papers):
                 pid      = paper.get("paperId", "")
                 cached   = cache.get_analysis(pid, req.claim)
@@ -152,16 +188,70 @@ def verify_claim(req: ClaimRequest):
                 if not cached and pid:
                     cache.set_analysis(pid, req.claim, analysis)
                 yield _sse("analysis", {"index": i, "total": len(papers), "paper_id": pid, "analysis": analysis})
-                if analysis.get("relevance_score", 0) >= 5:
-                    results.append((paper, analysis))
-            yield _sse("progress", {"message": "Synthesizing verdict\u2026", "step": 4, "total": 4})
-            overall = analyzer.overall_verdict(req.claim, results)
+                all_results.append((paper, analysis))
+
+            # ── Relevance filter ──────────────────────────────────────────────
+            MIN_SCORE   = 3
+            MAX_RETRIES = 2
+            relevant    = [(p, a) for p, a in all_results if a.get("relevance_score", 0) >= MIN_SCORE]
+
+            # ── Retry loop when too few relevant papers ───────────────────────
+            retry_round = 0
+            while len(relevant) < req.max_papers and retry_round < MAX_RETRIES:
+                retry_round += 1
+                yield _sse("progress", {
+                    "message": f"Only {len(relevant)} relevant papers found — searching deeper (attempt {retry_round}/{MAX_RETRIES})…",
+                    "step": 3, "total": 4,
+                })
+                retry_queries  = _enrich_queries(base_queries, retry_round - 1)
+                extra_papers   = _fetch_papers(retry_queries, req.max_papers, req.year_filter, exclude_ids=seen_ids)
+
+                if not extra_papers:
+                    break
+
+                for paper in extra_papers:
+                    pid    = paper.get("paperId", "")
+                    seen_ids.add(pid)
+                    cached = cache.get_analysis(pid, req.claim)
+                    analysis = cached if cached else analyzer.analyze_paper(paper, req.claim)
+                    if not cached and pid:
+                        cache.set_analysis(pid, req.claim, analysis)
+                    # Emit analysis event so UI shows the extra cards in real-time
+                    yield _sse("analysis", {
+                        "index":    len(all_results),
+                        "total":    len(all_results) + len(extra_papers),
+                        "paper_id": pid,
+                        "analysis": analysis,
+                    })
+                    all_results.append((paper, analysis))
+                    if analysis.get("relevance_score", 0) >= MIN_SCORE:
+                        relevant.append((paper, analysis))
+
+            # ── Low-relevance disclaimer ──────────────────────────────────────
+            if len(relevant) < req.max_papers:
+                found    = len(relevant)
+                requested = req.max_papers
+                yield _sse("warning", {
+                    "message": (
+                        f"Only {found} of the {requested} requested papers had sufficient relevance to the claim "
+                        f"after {MAX_RETRIES} additional search rounds. "
+                        "The verdict is based on available evidence — consider rephrasing the claim "
+                        "or broadening the search for more comprehensive results."
+                    )
+                })
+
+            yield _sse("progress", {"message": "Synthesizing verdict…", "step": 4, "total": 4})
+            # Pass all_results (not just relevant) so the overall prompt has full context;
+            # the overall_verdict prompt itself filters by relevance_score >= 4.
+            overall = analyzer.overall_verdict(req.claim, all_results)
             yield _sse("verdict", {"data": overall})
             yield _sse("done", {})
+
         except Exception as exc:
             logger.exception("verify_claim error")
             yield _sse("error", {"message": str(exc)})
             yield _sse("done", {})
+
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -170,16 +260,21 @@ def verify_claim(req: ClaimRequest):
 def literature_review(req: TopicRequest):
     def generate():
         try:
-            yield _sse("progress", {"message": "Generating search queries\u2026", "step": 1, "total": 3})
-            queries = analyzer.transform_query(req.topic, topic_mode=True, max_papers=req.max_papers)
-            yield _sse("progress", {"message": "Searching literature\u2026", "step": 2, "total": 3})
-            papers = _fetch_papers(queries, req.max_papers, req.year_filter)
+            yield _sse("progress", {"message": "Generating search queries…", "step": 1, "total": 3})
+            base_queries = analyzer.transform_query(req.topic, topic_mode=True, max_papers=req.max_papers)
+
+            yield _sse("progress", {"message": "Searching literature…", "step": 2, "total": 3})
+            papers = _fetch_papers(base_queries, req.max_papers, req.year_filter)
+
             if not papers:
                 yield _sse("error", {"message": "No papers found. Try rephrasing."})
                 yield _sse("done", {})
                 return
+
             yield _sse("papers", {"data": papers})
-            results = []
+            all_results: list[tuple] = []
+            seen_ids: set = {p.get("paperId", "") for p in papers}
+
             for i, paper in enumerate(papers):
                 pid      = paper.get("paperId", "")
                 cached   = cache.get_analysis(pid, req.topic)
@@ -187,15 +282,61 @@ def literature_review(req: TopicRequest):
                 if not cached and pid:
                     cache.set_analysis(pid, req.topic, analysis)
                 yield _sse("analysis", {"index": i, "total": len(papers), "paper_id": pid, "analysis": analysis})
-                results.append((paper, analysis))
-            yield _sse("progress", {"message": "Writing literature review\u2026", "step": 3, "total": 3})
-            review = analyzer.literature_review(req.topic, results)
+                all_results.append((paper, analysis))
+
+            # ── Retry loop for review (same logic, MIN_SCORE=3, MAX_RETRIES=2) ──
+            MIN_SCORE   = 3
+            MAX_RETRIES = 2
+            relevant    = [(p, a) for p, a in all_results if a.get("relevance_score", 0) >= MIN_SCORE]
+            retry_round = 0
+
+            while len(relevant) < req.max_papers and retry_round < MAX_RETRIES:
+                retry_round += 1
+                yield _sse("progress", {
+                    "message": f"Only {len(relevant)} relevant papers — searching deeper ({retry_round}/{MAX_RETRIES})…",
+                    "step": 2, "total": 3,
+                })
+                extra_papers = _fetch_papers(
+                    _enrich_queries(base_queries, retry_round - 1),
+                    req.max_papers, req.year_filter, exclude_ids=seen_ids,
+                )
+                if not extra_papers:
+                    break
+                for paper in extra_papers:
+                    pid = paper.get("paperId", "")
+                    seen_ids.add(pid)
+                    cached   = cache.get_analysis(pid, req.topic)
+                    analysis = cached if cached else analyzer.analyze_paper(paper, req.topic)
+                    if not cached and pid:
+                        cache.set_analysis(pid, req.topic, analysis)
+                    yield _sse("analysis", {
+                        "index":    len(all_results),
+                        "total":    len(all_results) + len(extra_papers),
+                        "paper_id": pid,
+                        "analysis": analysis,
+                    })
+                    all_results.append((paper, analysis))
+                    if analysis.get("relevance_score", 0) >= MIN_SCORE:
+                        relevant.append((paper, analysis))
+
+            if len(relevant) < req.max_papers:
+                yield _sse("warning", {
+                    "message": (
+                        f"Only {len(relevant)} of the {req.max_papers} requested papers were sufficiently "
+                        f"relevant to the topic after {MAX_RETRIES} additional search rounds."
+                    )
+                })
+
+            yield _sse("progress", {"message": "Writing literature review…", "step": 3, "total": 3})
+            review = analyzer.literature_review(req.topic, all_results)
             yield _sse("review", {"data": review})
             yield _sse("done", {})
+
         except Exception as exc:
             logger.exception("literature_review error")
             yield _sse("error", {"message": str(exc)})
             yield _sse("done", {})
+
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
@@ -204,9 +345,9 @@ def literature_review(req: TopicRequest):
 def search_papers(req: TopicRequest):
     def generate():
         try:
-            yield _sse("progress", {"message": "Generating search queries\u2026"})
+            yield _sse("progress", {"message": "Generating search queries…"})
             queries = analyzer.transform_query(req.topic, topic_mode=True, max_papers=req.max_papers)
-            yield _sse("progress", {"message": "Searching\u2026"})
+            yield _sse("progress", {"message": "Searching…"})
             papers = _fetch_papers(queries, req.max_papers, req.year_filter)
             if not papers:
                 yield _sse("error", {"message": "No papers found. Try rephrasing."})
@@ -241,15 +382,9 @@ async def summarize_paper(req: SummarizeRequest):
 
 @app.post("/api/paper/fetch")
 async def fetch_paper(req: FetchPaperRequest):
-    """
-    Retrieve the fullest available text for a paper using the cascade:
-      openAccessPdf PDF → arXiv PDF → PMC HTML → Europe PMC → BioMed DOI scrape → abstract
-    Caches result server-side. Returns source label so the UI can show it.
-    """
     paper = req.paper
     pid   = paper.get("paperId", "")
 
-    # Return cached result immediately
     if pid and pid in _text_cache:
         text, source = _text_cache[pid]
         return {
@@ -260,16 +395,13 @@ async def fetch_paper(req: FetchPaperRequest):
             "pid": pid,
         }
 
-    # Run the full cascade
     text, source = fetch_full_text(paper)
 
     if pid and text:
         _text_cache[pid] = (text, source)
 
-    # If we got a PDF (source says PDF), also encode it for inline viewer
     pdf_b64 = None
     if "PDF" in source:
-        # Re-fetch PDF bytes just for the b64 (cheap, already cached at OS level)
         try:
             pdf_bytes, _ = fetch_pdf_bytes(paper)
             if pdf_bytes:
@@ -288,17 +420,12 @@ async def fetch_paper(req: FetchPaperRequest):
 
 @app.post("/api/paper/chat")
 def paper_chat(req: ChatRequest):
-    """
-    Stream a chat response grounded in the paper's text.
-    If the text isn't cached yet, runs the full-text cascade on-the-fly.
-    """
     def generate():
         try:
             paper    = req.paper
             pid      = paper.get("paperId", "")
             question = req.question.strip()
 
-            # Get or fetch full text
             if pid and pid in _text_cache:
                 full_text, source = _text_cache[pid]
             else:

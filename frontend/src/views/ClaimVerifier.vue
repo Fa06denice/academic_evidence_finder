@@ -43,7 +43,7 @@
     </div>
 
     <!-- Verdict banner -->
-    <div v-if="verdict && !loading" class="mb-6 fade-up">
+    <div v-if="verdict && !loading" class="mb-4 fade-up">
       <div class="rounded-2xl p-5 border" :class="verdictStyle.bg">
         <div class="flex items-center gap-3 mb-3">
           <span class="text-2xl">{{ verdictStyle.icon }}</span>
@@ -69,6 +69,14 @@
           <button @click="exportBibtex" class="btn-sm">📄 Export BibTeX</button>
           <button @click="copyAll" class="btn-sm">{{ copiedAll ? '✓ Copied' : '📋 Copy citations' }}</button>
         </div>
+      </div>
+    </div>
+
+    <!-- Low-relevance warning disclaimer -->
+    <div v-if="warningMsg && !loading" class="mb-6 fade-up">
+      <div class="flex items-start gap-3 rounded-xl px-4 py-3 bg-amber-500/8 border border-amber-500/25">
+        <span class="text-amber-400 text-base shrink-0 mt-0.5">⚠️</span>
+        <p class="text-xs text-amber-300/90 leading-relaxed">{{ warningMsg }}</p>
       </div>
     </div>
 
@@ -117,6 +125,7 @@ const loading      = ref(false)
 const progressMsg  = ref('Starting…')
 const progressPct  = ref(0)
 const verdict      = ref(null)
+const warningMsg   = ref('')   // low-relevance disclaimer from backend
 const results      = ref([])
 const paperPool    = ref([])
 const activeFilter = ref('ALL')
@@ -145,22 +154,19 @@ const verdictStyle = computed(() =>
   VERDICT_STYLES[verdict.value?.overall_verdict] || VERDICT_STYLES.MIXED
 )
 
-// ── Clear cache event ─────────────────────────────────────────────────────────
+// ── Clear cache event (fired by App.vue after DELETE /api/cache) ──────────────
 function clearLocalState() {
-  results.value     = []
-  paperPool.value   = []
-  verdict.value     = null
-  progressPct.value = 0
-  progressMsg.value = 'Starting…'
+  results.value      = []
+  paperPool.value    = []
+  verdict.value      = null
+  warningMsg.value   = ''
+  progressPct.value  = 0
+  progressMsg.value  = 'Starting…'
   activeFilter.value = 'ALL'
 }
 
-function onClearCache() { clearLocalState() }
-
 onMounted(() => {
-  window.addEventListener('aef:clear-cache', onClearCache)
-
-  // Pre-fill from history reuse: ?q=...&autorun=1
+  window.addEventListener('aef:clear-cache', clearLocalState)
   const q = route.query.q
   if (q) {
     claim.value = q
@@ -169,15 +175,13 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
-  window.removeEventListener('aef:clear-cache', onClearCache)
+  window.removeEventListener('aef:clear-cache', clearLocalState)
 })
-// ─────────────────────────────────────────────────────────────────────────────
 
 async function submit() {
   if (!claim.value.trim() || loading.value) return
-  loading.value = true
   clearLocalState()
-  loading.value = true  // re-set after clearLocalState
+  loading.value     = true
   progressMsg.value = 'Searching literature…'
 
   await streamPost('/api/verify', { claim: claim.value, max_papers: +depth.value }, {
@@ -186,7 +190,7 @@ async function submit() {
       if (e.step && e.total) progressPct.value = Math.round((e.step / e.total) * 85)
     },
     onPapers(papers) {
-      paperPool.value = papers
+      paperPool.value   = papers
       progressMsg.value = `Analysing ${papers.length} papers…`
       progressPct.value = 15
     },
@@ -197,12 +201,13 @@ async function submit() {
       if (paper && e.analysis) results.value.push({ paper, analysis: e.analysis })
     },
     onVerdict(v) { verdict.value = v },
+    onWarning(e) { warningMsg.value = e.message },
     onDone() {
       progressPct.value = 100
-      loading.value = false
+      loading.value     = false
       historyStore.add({ type: 'verify', query: claim.value, path: '/' })
     },
-    onError(e) { progressMsg.value = '⚠ ' + e.message; loading.value = false }
+    onError(e) { progressMsg.value = '⚠ ' + e.message; loading.value = false },
   })
 }
 

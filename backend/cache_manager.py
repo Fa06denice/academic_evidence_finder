@@ -11,6 +11,9 @@ class CacheManager:
     """
     Persistent JSON cache for search results and LLM analyses.
     Prevents redundant API calls for the same paper/claim pair.
+
+    Search key includes the year_filter so that identical query strings
+    with different year ranges never collide in the cache.
     """
 
     def __init__(self, cache_file: str = "paper_cache.json"):
@@ -40,13 +43,14 @@ class CacheManager:
         return hashlib.md5(combined.encode()).hexdigest()
 
     # ── Search results ─────────────────────────────────────────────────────────
+    # Key includes year_filter so same query + different year range → different entry.
 
-    def get_search(self, query: str) -> Optional[list]:
-        entry = self.cache.get(f"search_{self._key(query)}")
+    def get_search(self, query: str, year_filter: Optional[str] = None) -> Optional[list]:
+        entry = self.cache.get(f"search_{self._key(query, year_filter or '')}")
         return entry.get("data") if isinstance(entry, dict) else None
 
-    def set_search(self, query: str, results: list):
-        self.cache[f"search_{self._key(query)}"] = {
+    def set_search(self, query: str, results: list, year_filter: Optional[str] = None):
+        self.cache[f"search_{self._key(query, year_filter or '')}"] = {
             "data": results, "ts": datetime.now().isoformat()
         }
         self._save()

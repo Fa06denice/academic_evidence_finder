@@ -64,10 +64,12 @@
       <div class="px-3 pb-3">
         <button
           @click="clearCache"
-          :class="cacheCleared ? 'text-emerald-400 border-emerald-500/30' : 'text-muted hover:text-white hover:border-accent/30'"
-          class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium border border-border bg-surface2 transition-all duration-150">
-          <span>{{ cacheCleared ? '✓' : '🗑' }}</span>
-          {{ cacheCleared ? 'Cache cleared!' : 'Clear session cache' }}
+          :disabled="cacheClearing"
+          :class="cacheCleared ? 'text-emerald-400 border-emerald-500/30' : cacheError ? 'text-red-400 border-red-500/30' : 'text-muted hover:text-white hover:border-accent/30'"
+          class="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-lg text-xs font-medium border border-border bg-surface2 transition-all duration-150 disabled:opacity-50 disabled:cursor-not-allowed">
+          <span v-if="cacheClearing" class="w-3 h-3 border-2 border-current/30 border-t-current rounded-full animate-spin"></span>
+          <span v-else>{{ cacheCleared ? '✓' : cacheError ? '⚠' : '🗑' }}</span>
+          {{ cacheClearing ? 'Clearing…' : cacheCleared ? 'Cache cleared!' : cacheError ? 'Clear failed' : 'Clear server cache' }}
         </button>
       </div>
 
@@ -104,11 +106,14 @@ import { ref } from 'vue'
 import { useRouter, useRoute } from 'vue-router'
 import { historyStore } from './stores/history.js'
 import OnboardingModal from './components/OnboardingModal.vue'
+import { del } from './api/index.js'
 
 const router        = useRouter()
 const route         = useRoute()
 const onboardingRef = ref(null)
 const cacheCleared  = ref(false)
+const cacheClearing = ref(false)
+const cacheError    = ref(false)
 
 const nav = [
   { to: '/',       icon: '🧪', label: 'Claim Verifier'    },
@@ -121,10 +126,6 @@ function typeIcon(type) {
   return type === 'verify' ? '🧪' : type === 'review' ? '📚' : type === 'chat' ? '💬' : '🔍'
 }
 
-/**
- * Navigate to the right route AND pass the query so the view
- * can pre-fill its input and auto-submit.
- */
 function reuseHistory(item) {
   router.push({
     path:  item.path,
@@ -133,13 +134,27 @@ function reuseHistory(item) {
 }
 
 /**
- * Clear session cache: dispatches a custom event that every view
- * listens to in order to wipe its local results/state.
+ * Clear server cache via DELETE /api/cache, then wipe local UI state.
+ * Shows spinner while in-flight, green check on success, red warning on failure.
  */
-function clearCache() {
-  window.dispatchEvent(new CustomEvent('aef:clear-cache'))
-  cacheCleared.value = true
-  setTimeout(() => { cacheCleared.value = false }, 2000)
+async function clearCache() {
+  if (cacheClearing.value) return
+  cacheClearing.value = true
+  cacheCleared.value  = false
+  cacheError.value    = false
+  try {
+    await del('/api/cache')
+    // Also wipe local view state
+    window.dispatchEvent(new CustomEvent('aef:clear-cache'))
+    cacheCleared.value = true
+    setTimeout(() => { cacheCleared.value = false }, 2500)
+  } catch (err) {
+    console.error('[clearCache]', err)
+    cacheError.value = true
+    setTimeout(() => { cacheError.value = false }, 3000)
+  } finally {
+    cacheClearing.value = false
+  }
 }
 </script>
 

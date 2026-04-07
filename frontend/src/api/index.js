@@ -1,6 +1,6 @@
 // Toutes les requêtes passent par le backend Railway via VITE_API_URL
 
-const API_BASE = import.meta.env.VITE_API_URL || ''
+export const API_BASE = import.meta.env.VITE_API_URL || ''
 
 // ── Generic POST (JSON in, JSON out) ─────────────────────────────────────────
 export async function post(path, body) {
@@ -9,6 +9,17 @@ export async function post(path, body) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
   })
+  if (!res.ok) {
+    let detail = res.statusText
+    try { const j = await res.json(); detail = JSON.stringify(j) } catch {}
+    throw new Error('HTTP ' + res.status + ': ' + detail)
+  }
+  return res.json()
+}
+
+// ── Generic DELETE ────────────────────────────────────────────────────────────
+export async function del(path) {
+  const res = await fetch(API_BASE + path, { method: 'DELETE' })
   if (!res.ok) {
     let detail = res.statusText
     try { const j = await res.json(); detail = JSON.stringify(j) } catch {}
@@ -78,14 +89,15 @@ export async function streamPost(path, body, handlers = {}) {
 
 function dispatch(evt, h) {
   switch (evt.type) {
-    case 'progress': h.onProgress?.(evt);    break
-    case 'papers':   h.onPapers?.(evt.data); break
-    case 'analysis': h.onAnalysis?.(evt);    break
-    case 'verdict':  h.onVerdict?.(evt.data);break
-    case 'review':   h.onReview?.(evt.data); break
-    case 'token':    h.onToken?.(evt);       break  // paper chat streaming
-    case 'done':     h.onDone?.();           break
-    case 'error':    h.onError?.(evt);       break
+    case 'progress': h.onProgress?.(evt);      break
+    case 'papers':   h.onPapers?.(evt.data);   break
+    case 'analysis': h.onAnalysis?.(evt);      break
+    case 'verdict':  h.onVerdict?.(evt.data);  break
+    case 'review':   h.onReview?.(evt.data);   break
+    case 'token':    h.onToken?.(evt);         break
+    case 'warning':  h.onWarning?.(evt);       break  // low relevance disclaimer
+    case 'done':     h.onDone?.();             break
+    case 'error':    h.onError?.(evt);         break
   }
 }
 
