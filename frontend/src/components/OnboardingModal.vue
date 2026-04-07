@@ -37,11 +37,15 @@
                 <div class="mt-3 space-y-2">
                   <div class="flex gap-3 p-3 rounded-lg bg-surface2 border border-border">
                     <span class="text-accent font-bold shrink-0">1</span>
-                    <div><strong class="text-white">Extraction factuelle</strong> — le LLM identifie le résultat principal du paper et sa direction (A > B, B > A, pas de différence, pas de comparaison) sans encore évaluer le claim.</div>
+                    <div>
+                      <strong class="text-white">Extraction factuelle</strong> — le LLM identifie les éléments A et B du claim, le résultat principal du paper et sa direction (A&nbsp;>&nbsp;B, B&nbsp;>&nbsp;A, pas de différence, pas de comparaison). Le claim est fourni uniquement pour caler A et B, pas pour juger.
+                    </div>
                   </div>
                   <div class="flex gap-3 p-3 rounded-lg bg-surface2 border border-border">
                     <span class="text-accent font-bold shrink-0">2</span>
-                    <div><strong class="text-white">Verdict</strong> — le LLM compare le résultat extrait au claim pour attribuer un verdict (SUPPORTS, CONTRADICTS, NEUTRAL…) avec un niveau de confiance.</div>
+                    <div>
+                      <strong class="text-white">Verdict</strong> — le LLM compare le résultat extrait au claim. Deux garde-fous s'appliquent : <em class="text-white">OUTCOME MISMATCH</em> (un paper sur un outcome différent → NEUTRAL automatique) et <em class="text-white">ANCHOR RULE</em> (chaque requête doit ancrer intervention <strong>et</strong> outcome). Seuls les papers avec un score de pertinence ≥ 4 entrent dans le verdict global.
+                    </div>
                   </div>
                 </div>
               </div>
@@ -125,7 +129,7 @@ const features = [
   {
     icon: '🧪',
     name: 'Claim Verifier',
-    desc: "Entre une affirmation scientifique. L'outil cherche des papers, les analyse et rend un verdict global avec les détails par paper."
+    desc: "Entre une affirmation scientifique. L'outil cherche des papers, les analyse et rend un verdict global basé uniquement sur les papers pertinents (score ≥ 4)."
   },
   {
     icon: '📚',
@@ -158,19 +162,19 @@ const risks = [
   {
     emoji: '🤖',
     title: "Erreurs d'interprétation du LLM",
-    desc: "Le LLM peut mal identifier A et B pour des claims ambigus, sur-généraliser un résultat étroit, ou classer CONTRADICTS un paper dont le scope est très restreint. Toujours lire l'explication et vérifier le paper source."
+    desc: "Malgré les garde-fous OUTCOME MISMATCH et ANCHOR RULE, le LLM peut encore sur-généraliser un résultat étroit ou mal caler A et B sur un claim ambigu. Toujours lire l'explication et vérifier le paper source."
   },
   {
     emoji: '📊',
     title: "Le verdict global n'est pas une méta-analyse",
-    desc: "Le verdict SUPPORTED/CONTRADICTED est une synthèse qualitative, pas une méta-analyse statistique. Des papers de qualité inégale comptent autant dans le décompte brut."
+    desc: "Le verdict SUPPORTED/CONTRADICTED est une synthèse qualitative sur les papers pertinents (score ≥ 4), pas une méta-analyse statistique. Des papers de qualité inégale peuvent toujours compter autant dans le décompte."
   },
 ]
 
 const limitations = [
   "Les requêtes sont générées en anglais. Un claim en français sera traduit, ce qui peut introduire des nuances perdues.",
   "Seuls les abstracts sont analysés — pas les corps des articles. Un résultat mentionné uniquement dans les résultats détaillés sera invisible.",
-  "Le score de pertinence (0–10) est une estimation LLM, pas un calcul statistique rigoureux.",
+  "Le score de pertinence (0–10) est une estimation LLM, pas un calcul statistique rigoureux. Le seuil de filtrage est fixé à ≥ 4.",
   "Les papers très récents (< 6 mois) sont sous-représentés car peu indexés et peu cités.",
   "Les comparaisons A vs B très générales couvrent un spectre trop large — les papers trouvés portent souvent sur des sous-domaines spécifiques, pas la question globale.",
   "Le mode Fast (5 papers) donne une vue partielle. Utiliser Deep (15 papers) pour les sujets controversés.",
