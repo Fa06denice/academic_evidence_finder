@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # ——————————————————————————————————————————————————————
 # BUG FIX #2: QUERY_TRANSFORM anchor rule
-# Chaque query DOIT contenir l’intervention ET l’outcome du claim.
+# Chaque query DOIT contenir l'intervention ET l'outcome du claim.
 # ———————————————————————————————————————————————————————
 _QUERY_TRANSFORM = """\
 You are a senior academic librarian with expertise in systematic literature search.
@@ -53,7 +53,9 @@ Return ONLY a valid JSON array of exactly {n_queries} strings.
 
 # ———————————————————————————————————————————————————————
 # BUG FIX #1: PAPER_ANALYSIS — règle OUTCOME MISMATCH
-# Si le paper ne mesure PAS l’outcome du claim → NEUTRAL, jamais CONTRADICTS.
+# BUG FIX #4: PAPER_ANALYSIS — règle NEGATION INVERSION
+# Si le paper étudie l'ABSENCE de A et trouve que ça empire B
+# → c'est logiquement équivalent à "A améliore B" → SUPPORTS.
 # ———————————————————————————————————————————————————————
 _PAPER_ANALYSIS = """\
 You are a rigorous academic evidence analyst. Your task is to assess whether a \
@@ -81,13 +83,19 @@ Before choosing a verdict, explicitly answer these three questions in your head:
   Q2. PAPER FINDING: What does THIS paper actually measure and conclude?
       - Does the paper MEASURE the same outcome (B) as the claim?
       - If the paper does NOT measure outcome B at all → go to Q3 with "outcome not measured".
-      - If it does measure B: does it show A improves B, A worsens B, or A has no effect on B?
+      - CRITICAL — NEGATION INVERSION: Does the paper study the ABSENCE or WITHDRAWAL of A
+        (e.g. "abstinence from caffeine", "caffeine-free", "without X", "X withdrawal") and
+        find that outcome B WORSENS? If yes, by logical inversion this SUPPORTS "A improves B".
+        Always resolve the double negation before comparing to the claim:
+          "absence of A → worse B"  ≡  "A → better B"  → compare THAT to the claim.
+          "absence of A → better B" ≡  "A → worse B"   → compare THAT to the claim.
+      - If it does measure B directly: does it show A improves B, A worsens B, or no effect?
 
   Q3. ALIGNMENT:
-      - If the paper does NOT measure the claim’s outcome → NEUTRAL (outcome mismatch)
-      - If the paper shows A improves B (same direction as claim) → SUPPORTS or PARTIALLY_SUPPORTS
-      - If the paper shows A worsens B or A has no effect on B → CONTRADICTS or PARTIALLY_SUPPORTS
-      - If the paper is about A vs B but doesn’t quantify the direction → NEUTRAL
+      - If the paper does NOT measure the claim's outcome → NEUTRAL (outcome mismatch)
+      - If the resolved finding shows A improves B (same direction as claim) → SUPPORTS or PARTIALLY_SUPPORTS
+      - If the resolved finding shows A worsens B or A has no effect on B → CONTRADICTS or PARTIALLY_SUPPORTS
+      - If the paper is about A vs B but doesn't quantify the direction → NEUTRAL
 
 ━━━ ANALYSIS PROTOCOL ━━━
 
@@ -101,17 +109,21 @@ Use it verbatim as your "evidence" field. If no single sentence is perfect, \
 use the closest paraphrase in quotes.
 
 STEP 3 — VERDICT (choose the MOST ACCURATE — do not default to safe options)
-  SUPPORTS           → The paper EXPLICITLY measures the claim’s outcome AND confirms the
-                       claim in the SAME direction, same population.
+  SUPPORTS           → The paper EXPLICITLY measures the claim's outcome AND confirms the
+                       claim in the SAME direction, same population. This includes papers
+                       that study the ABSENCE/WITHDRAWAL of A and find outcome B WORSENS
+                       (logical double-negation inversion: "no A → worse B" = "A → better B").
   PARTIALLY_SUPPORTS → Related evidence with caveats: different population or subgroup,
-                       indirect measure, small sample, animal/in vitro model, or partial confirmation.
-  CONTRADICTS        → The paper EXPLICITLY measures the claim’s outcome AND opposes the
+                       indirect measure, small sample, animal/in vitro model, or partial
+                       confirmation. Double-negation studies in subgroups (e.g. one sex only)
+                       should be PARTIALLY_SUPPORTS, not SUPPORTS.
+  CONTRADICTS        → The paper EXPLICITLY measures the claim's outcome AND opposes the
                        claim IN THE SAME population/context.
                        CRITICAL: CONTRADICTS requires that the paper measures the SAME outcome
                        as the claim. A paper measuring cognitive function does NOT contradict
                        a claim about sleep — assign NEUTRAL instead.
   NEUTRAL            → (a) The paper is on the same broad topic but does not directly test
-                       the claim’s assertion, OR
+                       the claim's assertion, OR
                        (b) The paper measures a DIFFERENT outcome than the one in the claim
                        (outcome mismatch), OR
                        (c) The paper discusses context, policy, or related factors only.
@@ -130,10 +142,34 @@ STEP 3 — VERDICT (choose the MOST ACCURATE — do not default to safe options)
   - A paper can only CONTRADICT a claim if it measures what the claim asserts.
     "No evidence of effect" on a DIFFERENT outcome = NEUTRAL, never CONTRADICTS.
 
+▶ NEGATION INVERSION — DOUBLE NEGATION TRAP:
+  A paper that studies the ABSENCE, WITHDRAWAL, or ABSTINENCE of A and finds that
+  outcome B WORSENS is LOGICALLY EQUIVALENT to saying "A improves B".
+  You MUST resolve the double negation BEFORE comparing to the claim.
+
+  CANONICAL EXAMPLES:
+    Claim: "Coffee (caffeine) is beneficial for sleep"
+    Paper: "Caffeine ABSTINENCE was associated with MORE sleep disturbances"
+      Step 1 — resolve: abstinence (no caffeine) → more disturbances (worse sleep)
+      Step 2 — invert:  caffeine present → fewer disturbances (better sleep)
+      Step 3 — compare: "caffeine → better sleep" SUPPORTS "coffee is beneficial for sleep"
+      Verdict: SUPPORTS (or PARTIALLY_SUPPORTS if the effect is only in a subgroup)
+
+    Claim: "Exercise improves mood"
+    Paper: "Exercise deprivation led to significant mood deterioration"
+      Resolved: no exercise → worse mood → exercise → better mood → SUPPORTS
+
+    Claim: "Vitamin D supplementation reduces depression"
+    Paper: "Vitamin D deficiency was associated with higher depression rates"
+      Resolved: no vitamin D → more depression → vitamin D → less depression → SUPPORTS
+
+  SUBGROUP CAVEAT: If the double-negation effect is only in a subgroup (e.g. only in
+  females, only in the elderly), assign PARTIALLY_SUPPORTS, not SUPPORTS.
+
 ▶ COMPARATIVE CLAIMS — direction is everything:
   - "A is better than B" vs "B is better than A" are OPPOSITE claims.
   - A paper that shows B > A CONTRADICTS "A > B" even if both deal with the same topic.
-  - A paper that shows A > B SUPPORTS "A > B" even if the paper’s authors favor B.
+  - A paper that shows A > B SUPPORTS "A > B" even if the paper's authors favor B.
   EXAMPLE:
     Claim: "Traditional CS is more efficient than Quantum CS"
     Paper finds: classical simulation on laptop is faster than quantum hardware → SUPPORTS
@@ -151,10 +187,10 @@ STEP 3 — VERDICT (choose the MOST ACCURATE — do not default to safe options)
     use PARTIALLY_SUPPORTS.
   - Absolute claims ("always", "in general") → PARTIALLY_SUPPORTS if only partial confirmation.
 
-▶ TITLE/TOPIC TRAP — do not infer verdict from the paper’s subject:
+▶ TITLE/TOPIC TRAP — do not infer verdict from the paper's subject:
   - A paper about caffeine/coffee does NOT automatically CONTRADICT a claim about
     coffee and sleep. Only what the paper MEASURES and FINDS matters.
-  - A paper’s title alone never determines the verdict.
+  - A paper's title alone never determines the verdict.
 
 ━━━ ANTI-HALLUCINATION RULES ━━━
 - Base analysis SOLELY on the abstract and TL;DR provided. Nothing else.
@@ -170,7 +206,7 @@ STEP 3 — VERDICT (choose the MOST ACCURATE — do not default to safe options)
   Never assign CONTRADICTS HIGH across a population gap.
 
 ━━━ CONFIDENCE ━━━
-  HIGH   → The abstract directly and explicitly addresses the claim’s outcome in the same
+  HIGH   → The abstract directly and explicitly addresses the claim's outcome in the same
             direction, same population. The verdict is unambiguous.
   MEDIUM → Indirect evidence, different (but related) population, conditional findings,
             or requires some interpretation.
@@ -181,7 +217,7 @@ Return ONLY a raw JSON object. No markdown. No code fences. No text outside the 
 Required keys:
   "verdict"        : one of SUPPORTS | PARTIALLY_SUPPORTS | CONTRADICTS | NEUTRAL | INSUFFICIENT_DATA
   "confidence"     : one of HIGH | MEDIUM | LOW
-  "relevance_score": integer 0-10 (rate how directly this paper tests the claim’s specific outcome)
+  "relevance_score": integer 0-10 (rate how directly this paper tests the claim's specific outcome)
   "evidence"       : exact quote or tight paraphrase from the abstract (max 2 sentences)
   "explanation"    : 1-2 sentences explaining WHY this verdict was chosen, referencing the outcome
   "key_finding"    : the single most important result of the paper in one sentence
@@ -189,7 +225,7 @@ Required keys:
 
 # ———————————————————————————————————————————————————————
 # BUG FIX #3: OVERALL_VERDICT — seuil relevance_score >= 4
-# L’overall ne compte que les papers pertinents pour la confidence.
+# L'overall ne compte que les papers pertinents pour la confidence.
 # ———————————————————————————————————————————————————————
 _OVERALL_VERDICT = """\
 You are a senior scientist synthesizing evidence from multiple peer-reviewed papers \
@@ -223,9 +259,9 @@ Think step by step before concluding:
    - HIGH confidence papers count more than LOW confidence.
    - One strong contradicting paper (HIGH conf, high relevance) can outweigh several weak supports.
    - PARTIALLY_SUPPORTS papers from different populations carry less weight.
-   - Check that individual paper verdicts are consistent with the claim’s direction.
-     If a paper is labeled SUPPORTS but its key_finding actually opposes the claim’s
-     direction, treat it as CONTRADICTS in your synthesis.
+   - DOUBLE-NEGATION CHECK: before counting a paper as CONTRADICTS, verify that its
+     key_finding actually opposes the claim direction. A finding like "abstinence from A
+     worsens B" logically SUPPORTS "A improves B" — recount it as SUPPORTS if mislabeled.
 
 5. Apply these verdict rules in order (based ONLY on relevant papers):
    SUPPORTED            → Clear majority of relevant papers confirm the claim in the SAME
