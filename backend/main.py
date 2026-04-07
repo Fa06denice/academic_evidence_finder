@@ -50,7 +50,6 @@ def _get_clients():
 
 scholar, analyzer, cache = _get_clients()
 
-# In-memory full-text cache  { paperId: (text, source_label) }
 _text_cache: dict[str, tuple[str, str]] = {}
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────────
@@ -175,7 +174,6 @@ def verify_claim(req: ClaimRequest):
                 analysis = cached if cached else analyzer.analyze_paper(paper, req.claim)
                 if not cached and pid:
                     cache.set_analysis(pid, req.claim, analysis)
-                # paper included in every event so frontend never needs paperPool lookup
                 yield _sse("analysis", {
                     "index": i, "total": len(papers),
                     "paper_id": pid, "paper": paper, "analysis": analysis,
@@ -189,18 +187,29 @@ def verify_claim(req: ClaimRequest):
             retry_round = 0
             while len(relevant) < req.max_papers and retry_round < MAX_RETRIES:
                 retry_round += 1
+
+                # How many more relevant papers do we still need?
+                missing = req.max_papers - len(relevant)
+
                 yield _sse("progress", {
                     "message": f"Only {len(relevant)} relevant papers found — searching deeper…",
                     "step": 3, "total": 4,
                 })
+
                 extra_papers = _fetch_papers(
                     _enrich_queries(base_queries, retry_round - 1),
-                    req.max_papers, req.year_filter, exclude_ids=seen_ids,
+                    missing,           # fetch only what is still needed
+                    req.year_filter,
+                    exclude_ids=seen_ids,
                 )
                 if not extra_papers:
                     break
 
-                for paper in extra_papers:
+                # Freeze index base + total BEFORE the loop so they stay stable
+                retry_base  = len(all_results)
+                retry_total = retry_base + len(extra_papers)
+
+                for j, paper in enumerate(extra_papers):
                     pid    = paper.get("paperId", "")
                     seen_ids.add(pid)
                     cached   = cache.get_analysis(pid, req.claim)
@@ -208,10 +217,10 @@ def verify_claim(req: ClaimRequest):
                     if not cached and pid:
                         cache.set_analysis(pid, req.claim, analysis)
                     yield _sse("analysis", {
-                        "index":    len(all_results),
-                        "total":    len(all_results) + len(extra_papers),
+                        "index":    retry_base + j,
+                        "total":    retry_total,
                         "paper_id": pid,
-                        "paper":    paper,   # <-- fix: always ship the full paper object
+                        "paper":    paper,
                         "analysis": analysis,
                     })
                     all_results.append((paper, analysis))
@@ -280,17 +289,25 @@ def literature_review(req: TopicRequest):
 
             while len(relevant) < req.max_papers and retry_round < MAX_RETRIES:
                 retry_round += 1
+                missing = req.max_papers - len(relevant)
+
                 yield _sse("progress", {
                     "message": f"Only {len(relevant)} relevant papers — searching deeper…",
                     "step": 2, "total": 3,
                 })
                 extra_papers = _fetch_papers(
                     _enrich_queries(base_queries, retry_round - 1),
-                    req.max_papers, req.year_filter, exclude_ids=seen_ids,
+                    missing,
+                    req.year_filter,
+                    exclude_ids=seen_ids,
                 )
                 if not extra_papers:
                     break
-                for paper in extra_papers:
+
+                retry_base  = len(all_results)
+                retry_total = retry_base + len(extra_papers)
+
+                for j, paper in enumerate(extra_papers):
                     pid = paper.get("paperId", "")
                     seen_ids.add(pid)
                     cached   = cache.get_analysis(pid, req.topic)
@@ -298,10 +315,10 @@ def literature_review(req: TopicRequest):
                     if not cached and pid:
                         cache.set_analysis(pid, req.topic, analysis)
                     yield _sse("analysis", {
-                        "index":    len(all_results),
-                        "total":    len(all_results) + len(extra_papers),
+                        "index":    retry_base + j,
+                        "total":    retry_total,
                         "paper_id": pid,
-                        "paper":    paper,   # <-- fix
+                        "paper":    paper,
                         "analysis": analysis,
                     })
                     all_results.append((paper, analysis))
