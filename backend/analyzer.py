@@ -3,6 +3,10 @@ import logging
 import os
 import re
 import time
+import itertools
+import threading
+import random
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Optional, Tuple
 from openai import OpenAI
 
@@ -12,10 +16,6 @@ logger = logging.getLogger(__name__)
 #  PROMPTS
 # ══════════════════════════════════════════════════════════════════════════════
 
-# ——————————————————————————————————————————————————————
-# BUG FIX #2: QUERY_TRANSFORM anchor rule
-# Chaque query DOIT contenir l'intervention ET l'outcome du claim.
-# ———————————————————————————————————————————————————————
 _QUERY_TRANSFORM = """\
 You are a senior academic librarian with expertise in systematic literature search.
 Your task: convert a scientific claim into {n_queries} DISTINCT, high-yield Semantic Scholar queries.
@@ -51,12 +51,6 @@ HARD RULES:
 Return ONLY a valid JSON array of exactly {n_queries} strings.
 """
 
-# ———————————————————————————————————————————————————————
-# BUG FIX #1: PAPER_ANALYSIS — règle OUTCOME MISMATCH
-# BUG FIX #4: PAPER_ANALYSIS — règle NEGATION INVERSION
-# Si le paper étudie l'ABSENCE de A et trouve que ça empire B
-# → c'est logiquement équivalent à "A améliore B" → SUPPORTS.
-# ———————————————————————————————————————————————————————
 _PAPER_ANALYSIS = """\
 You are a rigorous academic evidence analyst. Your task is to assess whether a \
 scientific paper SUPPORTS, CONTRADICTS, or is UNRELATED to a specific claim.
@@ -223,10 +217,6 @@ Required keys:
   "key_finding"    : the single most important result of the paper in one sentence
 """
 
-# ———————————————————————————————————————————————————————
-# BUG FIX #3: OVERALL_VERDICT — seuil relevance_score >= 4
-# L'overall ne compte que les papers pertinents pour la confidence.
-# ———————————————————————————————————————————————————————
 _OVERALL_VERDICT = """\
 You are a senior scientist synthesizing evidence from multiple peer-reviewed papers \
 to issue a final verdict on a scientific claim.
@@ -457,131 +447,153 @@ def _is_vague_claim(claim: str) -> bool:
     return not bool(_VERB_RE.search(claim))
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  MODEL ROTATOR
+#  KEY POOL — Kimi-only, round-robin thread-safe
+#  Reads LLM_API_KEY, LLM_API_KEY_2 … LLM_API_KEY_10 from env
 # ══════════════════════════════════════════════════════════════════════════════
 
-class ModelRotator:
-    GROQ_FALLBACKS = [
-        "qwen/qwen3-32b",
-        "llama-3.3-70b-versatile",
-        "meta-llama/llama-4-scout-17b-16e-instruct",
-        "openai/gpt-oss-120b",
-        "openai/gpt-oss-20b",
-    ]
+def _load_key_pool() -> list:
+    """Return all Groq API keys found in env, in declaration order."""
+    keys = []
+    # Primary key
+    primary = os.getenv("LLM_API_KEY", "")
+    if primary:
+        keys.append(primary)
+    # Extra keys: LLM_API_KEY_2 … LLM_API_KEY_10
+    for i in range(2, 11):
+        k = os.getenv(f"LLM_API_KEY_{i}", "")
+        if k:
+            keys.append(k)
+    if not keys:
+        raise ValueError("No Groq API key found. Set LLM_API_KEY in your environment.")
+    logger.info("Kimi key pool loaded: %d key(s)", len(keys))
+    return keys
 
-    def __init__(self, pool: list):
-        self.pool        = pool
-        self.index       = 0
-        self.fail_counts = [0] * len(pool)
+class _KeyPool:
+    """Thread-safe round-robin pool of Groq clients, all pointing to Kimi."""
 
-    @property
-    def current(self) -> tuple:
-        return self.pool[self.index]
+    MODEL = "moonshotai/kimi-k2-instruct"
+    BASE_URL = "https://api.groq.com/openai/v1"
 
-    @property
-    def current_label(self) -> str:
-        return self.pool[self.index][2]
+    def __init__(self, keys: list):
+        self._clients = [
+            OpenAI(api_key=k, base_url=self.BASE_URL)
+            for k in keys
+        ]
+        self._cycle = itertools.cycle(range(len(self._clients)))
+        self._lock  = threading.Lock()
+        self._n     = len(self._clients)
+        logger.info("KeyPool initialised with %d Kimi client(s)", self._n)
 
-    def rotate(self):
-        self.fail_counts[self.index] += 1
-        original = self.index
-        for _ in range(len(self.pool)):
-            self.index = (self.index + 1) % len(self.pool)
-            if self.fail_counts[self.index] < 3:
-                logger.info("Rotated to: %s", self.pool[self.index][2])
-                return
-        logger.warning("All models hit limits — resetting.")
-        self.fail_counts = [0] * len(self.pool)
-        self.index       = (original + 1) % len(self.pool)
+    def next_client(self) -> OpenAI:
+        with self._lock:
+            idx = next(self._cycle)
+        return self._clients[idx]
 
-    def success(self):
-        self.fail_counts[self.index] = 0
+    def call(self, messages: list, temperature: float = 0.1,
+             max_tokens: int = 1000, retries: int = 6) -> str:
+        """
+        Call Kimi with automatic retry + key rotation on 429.
+        Exponential back-off with jitter: 0.4s, 0.8s, 1.6s, 3.2s, 6.4s, 12.8s
+        With 10 keys in round-robin, consecutive calls hit different keys so
+        most 429s resolve immediately on the next client.
+        """
+        last_exc = None
+        for attempt in range(retries):
+            client = self.next_client()
+            try:
+                resp = client.chat.completions.create(
+                    model=self.MODEL,
+                    messages=messages,
+                    temperature=temperature,
+                    max_tokens=max_tokens,
+                )
+                content = _extract_content(resp)
+                if content:
+                    return content.strip()
+                # Empty response — retry without sleeping
+                logger.warning("Empty content on attempt %d, retrying…", attempt + 1)
+            except Exception as e:
+                last_exc = e
+                err = str(e)
+                is_rate = "429" in err or "rate_limit" in err.lower() or "ratelimitexceeded" in err.lower()
+                if is_rate:
+                    wait = (0.4 * (2 ** attempt)) + random.uniform(0, 0.2)
+                    logger.warning("429 on attempt %d/%d — sleeping %.2fs then rotating key",
+                                   attempt + 1, retries, wait)
+                    time.sleep(wait)
+                else:
+                    # Non-rate error: log and retry immediately on next key
+                    logger.error("LLM error attempt %d/%d: %s", attempt + 1, retries, err[:200])
+
+        raise ValueError(
+            f"All {retries} Kimi attempts failed. Last error: {last_exc}"
+        )
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  PAPER ANALYZER
 # ══════════════════════════════════════════════════════════════════════════════
 
 class PaperAnalyzer:
-    PROVIDERS = {
-        "openai": {"base_url": None,                                                        "default_model": "gpt-4o-mini"},
-        "groq":   {"base_url": "https://api.groq.com/openai/v1",                           "default_model": "moonshotai/kimi-k2-instruct"},
-        "ollama": {"base_url": "http://localhost:11434/v1",                                 "default_model": "llama3.2"},
-        "gemini": {"base_url": "https://generativelanguage.googleapis.com/v1beta/openai/", "default_model": "gemini-2.0-flash"},
-    }
     VALID_VERDICTS = {"SUPPORTS", "PARTIALLY_SUPPORTS", "CONTRADICTS", "NEUTRAL", "INSUFFICIENT_DATA"}
     VALID_OVERALL  = {"SUPPORTED", "PARTIALLY_SUPPORTED", "CONTRADICTED", "MIXED", "INSUFFICIENT_EVIDENCE"}
     VALID_CONF     = {"HIGH", "MEDIUM", "LOW"}
 
     def __init__(self, api_key: str, provider: str = "groq", model: str = None, extra_keys: list = None):
-        cfg        = self.PROVIDERS.get(provider, self.PROVIDERS["groq"])
-        base_url   = cfg["base_url"]
-        base_model = model or os.getenv("LLM_MODEL") or cfg["default_model"]
+        # Collect all keys: constructor arg + extra_keys list + env vars
+        all_keys = []
+        if api_key:
+            all_keys.append(api_key)
+        for k in (extra_keys or []):
+            if k and k not in all_keys:
+                all_keys.append(k)
 
-        def _make(key, mdl, label):
-            kw = {"api_key": key or "ollama"}
-            if base_url:
-                kw["base_url"] = base_url
-            return (OpenAI(**kw), mdl, label)
+        # Always top-up from env so that Railway/Render env vars are picked up
+        for k in _load_key_pool():
+            if k not in all_keys:
+                all_keys.append(k)
 
-        pool = [_make(api_key, base_model, provider + "/" + base_model + " [primary]")]
-        if provider == "groq":
-            for alt in ModelRotator.GROQ_FALLBACKS:
-                if alt != base_model:
-                    pool.append(_make(api_key, alt, "groq/" + alt))
-        for i, k in enumerate(extra_keys or []):
-            if k:
-                pool.append(_make(k, base_model, provider + "/" + base_model + " [key" + str(i+1) + "]"))
-
-        self.rotator  = ModelRotator(pool)
-        self.provider = provider
+        self._pool    = _KeyPool(all_keys)
+        self.provider = "groq"
 
     @property
     def current_model(self) -> str:
-        return self.rotator.current_label
+        return f"groq/{_KeyPool.MODEL} [{self._pool._n} key(s)]"
+
+    # ── low-level LLM call ────────────────────────────────────────────────────
+
+    def _llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1000) -> str:
+        return self._pool.call(
+            messages=[{"role": "user", "content": prompt}],
+            temperature=temperature,
+            max_tokens=max_tokens,
+        )
+
+    # ── validation helpers ────────────────────────────────────────────────────
 
     def validate_claim(self, claim: str) -> Optional[dict]:
         claim = claim.strip()
         if not claim:
-            return self._norm_overall({"overall_verdict": "INSUFFICIENT_EVIDENCE",
-                                       "overall_confidence": "LOW",
-                                       "verdict_explanation": "No claim was provided.",
-                                       "supporting_count": 0, "contradicting_count": 0, "neutral_count": 0})
+            return self._norm_overall({
+                "overall_verdict": "INSUFFICIENT_EVIDENCE",
+                "overall_confidence": "LOW",
+                "verdict_explanation": "No claim was provided.",
+                "supporting_count": 0, "contradicting_count": 0, "neutral_count": 0,
+            })
         if _is_vague_claim(claim):
             return self._norm_overall({
                 "overall_verdict": "INSUFFICIENT_EVIDENCE",
                 "overall_confidence": "LOW",
                 "verdict_explanation": (
-                    'The input "' + claim + '" is too vague to evaluate scientifically. '
+                    f'The input "{claim}" is too vague to evaluate scientifically. '
                     "Please enter a full sentence with subject + verb + specific assertion. "
                     'Example: "Vitamin D supplementation reduces depression symptoms."'
                 ),
-                "supporting_count": 0, "contradicting_count": 0, "neutral_count": 0})
+                "supporting_count": 0, "contradicting_count": 0, "neutral_count": 0,
+            })
         return None
 
-    def _llm(self, prompt: str, temperature: float = 0.1, max_tokens: int = 1000) -> str:
-        attempts = len(self.rotator.pool) * 2
-        for i in range(attempts):
-            client, model, label = self.rotator.current
-            try:
-                resp    = client.chat.completions.create(
-                    model=model,
-                    messages=[{"role": "user", "content": prompt}],
-                    temperature=temperature,
-                    max_tokens=max_tokens,
-                )
-                content = _extract_content(resp)
-                if content:
-                    self.rotator.success()
-                    return content.strip()
-                self.rotator.rotate()
-            except Exception as e:
-                err     = str(e)
-                is_rate = "429" in err or "rate_limit" in err.lower() or "ratelimitexceeded" in err.lower()
-                logger.error("Attempt %d/%d %s rate=%s %s", i+1, attempts, label, is_rate, err[:200])
-                self.rotator.rotate()
-                if is_rate:
-                    time.sleep(2)
-        raise ValueError("All models exhausted after " + str(attempts) + " attempts.")
+    # ── JSON helpers ──────────────────────────────────────────────────────────
 
     def _parse(self, raw: str, fallback: dict) -> dict:
         try:
@@ -609,6 +621,8 @@ class PaperAnalyzer:
             "contradicting_count": _safe_int(d.get("contradicting_count"), 0),
             "neutral_count":       _safe_int(d.get("neutral_count"),       0),
         }
+
+    # ── public API ────────────────────────────────────────────────────────────
 
     def transform_query(self, user_input: str, topic_mode: bool = False, max_papers: int = 7) -> List[str]:
         if max_papers <= 6:
@@ -647,27 +661,51 @@ class PaperAnalyzer:
             abstract=abstract[:3000],
             tldr=tldr_text,
         )
-        fallback = {"verdict": "INSUFFICIENT_DATA", "confidence": "LOW", "relevance_score": 1,
-                    "evidence": "Analysis could not be completed.",
-                    "explanation": "LLM analysis failed.", "key_finding": "N/A"}
+        fallback = {
+            "verdict": "INSUFFICIENT_DATA", "confidence": "LOW", "relevance_score": 1,
+            "evidence": "Analysis could not be completed.",
+            "explanation": "LLM analysis failed.", "key_finding": "N/A",
+        }
         return self._norm_analysis(self._parse(self._llm(prompt, temperature=0.1), fallback))
+
+    def analyze_papers_parallel(self, papers: list, claim: str, max_workers: int = 5) -> list:
+        """
+        Analyse une liste de papers en parallèle via ThreadPoolExecutor.
+        Retourne une liste de (paper, analysis) dans le même ordre que `papers`.
+        max_workers est automatiquement plafonné au nombre de clés disponibles.
+        """
+        workers = min(max_workers, self._pool._n, len(papers))
+        results = [None] * len(papers)
+
+        def _task(idx: int, paper: dict):
+            return idx, self.analyze_paper(paper, claim)
+
+        with ThreadPoolExecutor(max_workers=workers) as executor:
+            futures = {executor.submit(_task, i, p): i for i, p in enumerate(papers)}
+            for future in as_completed(futures):
+                idx, analysis = future.result()
+                results[idx] = (papers[idx], analysis)
+
+        return results
 
     def overall_verdict(self, claim: str, results: List[Tuple[dict, dict]]) -> dict:
         if not results:
-            return self._norm_overall({"overall_verdict": "INSUFFICIENT_EVIDENCE",
-                                       "overall_confidence": "LOW",
-                                       "verdict_explanation": "No papers with sufficient content were retrieved.",
-                                       "supporting_count": 0, "contradicting_count": 0, "neutral_count": 0})
+            return self._norm_overall({
+                "overall_verdict": "INSUFFICIENT_EVIDENCE",
+                "overall_confidence": "LOW",
+                "verdict_explanation": "No papers with sufficient content were retrieved.",
+                "supporting_count": 0, "contradicting_count": 0, "neutral_count": 0,
+            })
         lines = []
         for paper, analysis in results:
             lines.append(
                 "Paper: " + paper.get("title", "Unknown") + "\n"
-                "  Verdict: "        + analysis.get("verdict",         "N/A") + "\n"
-                "  Confidence: "     + analysis.get("confidence",      "N/A") + "\n"
+                "  Verdict: "         + analysis.get("verdict",         "N/A") + "\n"
+                "  Confidence: "      + analysis.get("confidence",      "N/A") + "\n"
                 "  Relevance Score: " + str(analysis.get("relevance_score", 0)) + "/10\n"
-                "  Key Finding: "    + analysis.get("key_finding",     "N/A") + "\n"
-                "  Evidence: "       + analysis.get("evidence",        "N/A") + "\n"
-                "  Explanation: "    + analysis.get("explanation",     "N/A")
+                "  Key Finding: "     + analysis.get("key_finding",     "N/A") + "\n"
+                "  Evidence: "        + analysis.get("evidence",        "N/A") + "\n"
+                "  Explanation: "     + analysis.get("explanation",     "N/A")
             )
         fallback = {
             "overall_verdict": "MIXED",
@@ -692,8 +730,10 @@ class PaperAnalyzer:
                 "Key Finding: " + analysis.get("key_finding", "N/A") + "\n"
             )
         try:
-            return self._llm(_LITERATURE_REVIEW.format(topic=topic, papers_text=papers_text),
-                             temperature=0.3, max_tokens=2000)
+            return self._llm(
+                _LITERATURE_REVIEW.format(topic=topic, papers_text=papers_text),
+                temperature=0.3, max_tokens=2000,
+            )
         except Exception as exc:
             return "Literature review generation failed: " + str(exc)
 
