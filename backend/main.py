@@ -190,21 +190,20 @@ def verify_claim(req: ClaimRequest):
                 yield _sse("analysis", {"index": i, "total": len(papers), "paper_id": pid, "analysis": analysis})
                 all_results.append((paper, analysis))
 
-            # ── Relevance filter ──────────────────────────────────────────────
+            # ── Relevance filter + single retry round ─────────────────────────
             MIN_SCORE   = 3
-            MAX_RETRIES = 2
+            MAX_RETRIES = 1  # one extra round max to avoid analysing 3× max_papers
             relevant    = [(p, a) for p, a in all_results if a.get("relevance_score", 0) >= MIN_SCORE]
 
-            # ── Retry loop when too few relevant papers ───────────────────────
             retry_round = 0
             while len(relevant) < req.max_papers and retry_round < MAX_RETRIES:
                 retry_round += 1
                 yield _sse("progress", {
-                    "message": f"Only {len(relevant)} relevant papers found — searching deeper (attempt {retry_round}/{MAX_RETRIES})…",
+                    "message": f"Only {len(relevant)} relevant papers found — searching deeper…",
                     "step": 3, "total": 4,
                 })
-                retry_queries  = _enrich_queries(base_queries, retry_round - 1)
-                extra_papers   = _fetch_papers(retry_queries, req.max_papers, req.year_filter, exclude_ids=seen_ids)
+                retry_queries = _enrich_queries(base_queries, retry_round - 1)
+                extra_papers  = _fetch_papers(retry_queries, req.max_papers, req.year_filter, exclude_ids=seen_ids)
 
                 if not extra_papers:
                     break
@@ -216,7 +215,6 @@ def verify_claim(req: ClaimRequest):
                     analysis = cached if cached else analyzer.analyze_paper(paper, req.claim)
                     if not cached and pid:
                         cache.set_analysis(pid, req.claim, analysis)
-                    # Emit analysis event so UI shows the extra cards in real-time
                     yield _sse("analysis", {
                         "index":    len(all_results),
                         "total":    len(all_results) + len(extra_papers),
@@ -229,20 +227,16 @@ def verify_claim(req: ClaimRequest):
 
             # ── Low-relevance disclaimer ──────────────────────────────────────
             if len(relevant) < req.max_papers:
-                found    = len(relevant)
-                requested = req.max_papers
                 yield _sse("warning", {
                     "message": (
-                        f"Only {found} of the {requested} requested papers had sufficient relevance to the claim "
-                        f"after {MAX_RETRIES} additional search rounds. "
+                        f"Only {len(relevant)} of the {req.max_papers} requested papers had sufficient "
+                        "relevance to the claim after an additional search round. "
                         "The verdict is based on available evidence — consider rephrasing the claim "
                         "or broadening the search for more comprehensive results."
                     )
                 })
 
             yield _sse("progress", {"message": "Synthesizing verdict…", "step": 4, "total": 4})
-            # Pass all_results (not just relevant) so the overall prompt has full context;
-            # the overall_verdict prompt itself filters by relevance_score >= 4.
             overall = analyzer.overall_verdict(req.claim, all_results)
             yield _sse("verdict", {"data": overall})
             yield _sse("done", {})
@@ -284,16 +278,16 @@ def literature_review(req: TopicRequest):
                 yield _sse("analysis", {"index": i, "total": len(papers), "paper_id": pid, "analysis": analysis})
                 all_results.append((paper, analysis))
 
-            # ── Retry loop for review (same logic, MIN_SCORE=3, MAX_RETRIES=2) ──
+            # ── Single retry round for review ─────────────────────────────────
             MIN_SCORE   = 3
-            MAX_RETRIES = 2
+            MAX_RETRIES = 1  # one extra round max
             relevant    = [(p, a) for p, a in all_results if a.get("relevance_score", 0) >= MIN_SCORE]
             retry_round = 0
 
             while len(relevant) < req.max_papers and retry_round < MAX_RETRIES:
                 retry_round += 1
                 yield _sse("progress", {
-                    "message": f"Only {len(relevant)} relevant papers — searching deeper ({retry_round}/{MAX_RETRIES})…",
+                    "message": f"Only {len(relevant)} relevant papers — searching deeper…",
                     "step": 2, "total": 3,
                 })
                 extra_papers = _fetch_papers(
@@ -323,7 +317,7 @@ def literature_review(req: TopicRequest):
                 yield _sse("warning", {
                     "message": (
                         f"Only {len(relevant)} of the {req.max_papers} requested papers were sufficiently "
-                        f"relevant to the topic after {MAX_RETRIES} additional search rounds."
+                        "relevant to the topic after an additional search round."
                     )
                 })
 
