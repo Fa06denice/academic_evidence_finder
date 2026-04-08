@@ -701,13 +701,10 @@ def paper_chat(req: ChatRequest):
                     messages.append({"role": role, "content": turn["content"]})
             messages.append({"role": "user", "content": question})
 
-            client, model, _ = analyzer.rotator.current
-            stream = client.chat.completions.create(
-                model=model,
+            stream = analyzer.stream_chat(
                 messages=messages,
                 temperature=0.1,
                 max_tokens=800,
-                stream=True,
             )
             answer_text = ""
             for chunk in stream:

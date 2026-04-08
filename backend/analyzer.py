@@ -479,6 +479,16 @@ class PaperAnalyzer:
             max_tokens=max_tokens,
         )
 
+    def stream_chat(self, messages: list, temperature: float = 0.1, max_tokens: int = 800):
+        client = self._pool.next_client()
+        return client.chat.completions.create(
+            model=_KeyPool.MODEL,
+            messages=messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            stream=True,
+        )
+
     # ── validation helpers ────────────────────────────────────────────────────
 
     def validate_claim(self, claim: str) -> Optional[dict]:
