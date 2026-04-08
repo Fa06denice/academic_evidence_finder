@@ -17,43 +17,45 @@ logger = logging.getLogger(__name__)
 # ══════════════════════════════════════════════════════════════════════════════
 
 _QUERY_TRANSFORM = """\
-You are a senior academic librarian with expertise in systematic literature search.
-Your task: convert a scientific claim into {n_queries} DISTINCT, high-yield Semantic Scholar queries.
+You are a senior academic librarian specialized in systematic literature search.
+
+Task: convert the scientific claim below into exactly {n_queries} DISTINCT, high-yield Semantic Scholar queries.
 
 CLAIM: {user_input}
 
 STRATEGY:
 - Query 1: direct translation of the claim into keywords (most specific).
-- Query 2: the core mechanism, variable, or intervention being tested.
-- Query 3: the broader epidemiological / clinical / scientific context.
-- Query 4+ (if requested): alternative phrasings, related outcomes, or methodological angles
-  that would surface papers a different audience might have published.
+- Query 2: core mechanism, variable, or intervention being tested.
+- Query 3: broader epidemiological / clinical / scientific context.
+- Query 4+ (if requested): alternative phrasings, related outcomes, or methodological angles.
 
-HARD RULES:
-- All queries in English regardless of claim language.
-- Preserve exact medical/scientific terms — never paraphrase or generalize.
-- 3 to 7 words per query. No stopwords, no punctuation.
-- All queries must be meaningfully different from each other.
-- ANCHOR RULE — CRITICAL: Every single query MUST include BOTH:
-    (1) the intervention / subject of the claim (e.g. "caffeine", "coffee", "vitamin D")
-    (2) the outcome / object of the claim (e.g. "sleep", "depression", "mortality")
-  Never query the outcome alone without the intervention, and never query the
-  intervention alone without the outcome. A query like "sleep quality" or "caffeine"
-  in isolation is FORBIDDEN when the claim is about "coffee and sleep".
-  EXAMPLE: claim = "coffee is beneficial for sleep"
-    GOOD: "caffeine sleep quality RCT", "coffee sleep latency humans", "caffeine sleep deprivation"
-    BAD:  "sleep quality adults", "caffeine cognitive function", "melatonin sleep" (wrong intervention)
-- If the claim contains a comparison (e.g. "no more than", "better than", "compared to",
-  "versus"), ALWAYS include the comparator explicitly in at least one query.
-- If the claim is a comparative (A vs B), generate queries for BOTH sides of the comparison
-  so that papers supporting either direction are retrieved.
+RULES:
+- All queries must be in English.
+- Preserve exact medical/scientific terms; do not generalize them.
+- 3 to 7 words per query.
+- No stopwords. No punctuation.
+- Queries must be meaningfully different from each other.
+
+ANCHOR RULE — EVERY QUERY MUST INCLUDE BOTH:
+1. the intervention / subject of the claim
+2. the outcome / object of the claim
+
+Never output:
+- a query with the outcome alone
+- a query with the intervention alone
+- a query using a different intervention than the claim
+
+COMPARISON RULES:
+- If the claim includes a comparator ("better than", "versus", "compared to", "no more than"), include the comparator explicitly in at least one query.
+- If the claim is A vs B, generate queries covering both sides of the comparison.
 
 Return ONLY a valid JSON array of exactly {n_queries} strings.
 """
 
 _PAPER_ANALYSIS = """\
-You are a rigorous academic evidence analyst. Your task is to assess whether a \
-scientific paper SUPPORTS, CONTRADICTS, or is UNRELATED to a specific claim.
+You are a rigorous academic evidence analyst.
+
+Task: determine whether the paper below SUPPORTS, PARTIALLY_SUPPORTS, CONTRADICTS, NEUTRAL, or has INSUFFICIENT_DATA regarding the claim.
 
 CLAIM: {claim}
 
@@ -64,221 +66,127 @@ PAPER:
   Abstract: {abstract}
   TL;DR:    {tldr}
 
-━━━ MANDATORY PRE-ANALYSIS: CLAIM DECOMPOSITION ━━━
+PROTOCOL:
 
-Before choosing a verdict, explicitly answer these three questions in your head:
+1. RELEVANCE
+Check whether the paper studies the same population, intervention, condition, or phenomenon as the claim.
+If completely off-topic, assign NEUTRAL and relevance_score <= 2.
 
-  Q1. DIRECTION: What does the claim assert? Identify:
-      - The subject/intervention (A), the outcome/object (B), and the direction
-      - Does the claim say A improves B, A causes B, A prevents B, A > B, etc.?
-      Example: "Coffee is beneficial for sleep"
-        → Intervention=Coffee/caffeine, Outcome=sleep quality/duration, Direction=coffee improves sleep
+2. EVIDENCE
+Extract the single most informative sentence from the abstract related to the claim.
+- Use it verbatim when possible.
+- If no exact sentence fits, use a tight paraphrase in quotes.
 
-  Q2. PAPER FINDING: What does THIS paper actually measure and conclude?
-      - Does the paper MEASURE the same outcome (B) as the claim?
-      - If the paper does NOT measure outcome B at all → go to Q3 with "outcome not measured".
-      - CRITICAL — NEGATION INVERSION: Does the paper study the ABSENCE or WITHDRAWAL of A
-        (e.g. "abstinence from caffeine", "caffeine-free", "without X", "X withdrawal") and
-        find that outcome B WORSENS? If yes, by logical inversion this SUPPORTS "A improves B".
-        Always resolve the double negation before comparing to the claim:
-          "absence of A → worse B"  ≡  "A → better B"  → compare THAT to the claim.
-          "absence of A → better B" ≡  "A → worse B"   → compare THAT to the claim.
-      - If it does measure B directly: does it show A improves B, A worsens B, or no effect?
+3. VERDICT
+- SUPPORTS:
+  The paper explicitly measures the claim's outcome and confirms the claim in the same direction, same population.
+  Also includes logical inversion cases such as absence/withdrawal of A causing worse B.
+- PARTIALLY_SUPPORTS:
+  Related evidence with caveats: subgroup only, indirect measure, different population, small sample, animal/in vitro model, or conditional finding.
+- CONTRADICTS:
+  The paper explicitly measures the SAME outcome as the claim and finds the opposite direction in the same population/context.
+- NEUTRAL:
+  Same broad topic but does not directly test the claim, OR measures a different outcome, OR provides context/policy/background only.
+- INSUFFICIENT_DATA:
+  Use only if the abstract is missing, unreadable, or shorter than 60 words. Never use as a safe default.
 
-  Q3. ALIGNMENT:
-      - If the paper does NOT measure the claim's outcome → NEUTRAL (outcome mismatch)
-      - If the resolved finding shows A improves B (same direction as claim) → SUPPORTS or PARTIALLY_SUPPORTS
-      - If the resolved finding shows A worsens B or A has no effect on B → CONTRADICTS or PARTIALLY_SUPPORTS
-      - If the paper is about A vs B but doesn't quantify the direction → NEUTRAL
+CRITICAL RULES:
+- OUTCOME MISMATCH:
+  A paper can contradict the claim only if it measures the SAME outcome.
+  Different outcome = NEUTRAL, never CONTRADICTS.
+- NEGATION INVERSION:
+  "No A -> worse B" logically supports "A -> better B".
+  Apply this inversion before deciding the verdict.
+- COMPARATIVE CLAIMS:
+  "A better than B" and "B better than A" are opposite claims.
+  Respect direction strictly.
+- NO-EFFECT FINDINGS:
+  "No difference", "no association", "no effect", "did not improve" on the SAME outcome count against the claim.
+  If population/context differs, prefer PARTIALLY_SUPPORTS or lower confidence rather than strong contradiction.
+- SCOPE:
+  If the claim is general but the paper supports it only in specific conditions/subgroups, use PARTIALLY_SUPPORTS.
+- TITLE TRAP:
+  Do not infer the verdict from the title or topic alone. Base it on what the abstract measures and finds.
 
-━━━ ANALYSIS PROTOCOL ━━━
+ANTI-HALLUCINATION:
+- Use ONLY the abstract and TL;DR provided.
+- Do not use outside knowledge.
+- Do not invent quotes.
+- Mechanistic, animal, or in vitro evidence: PARTIALLY_SUPPORTS at most, usually LOW confidence.
+- If the claim specifies a population and the paper studies a different one, cap supportive/contradictory certainty accordingly.
 
-STEP 1 — RELEVANCE CHECK
-Does this paper study the same population, intervention, condition, or phenomenon \
-as the claim? If completely off-topic, assign NEUTRAL with relevance_score <= 2.
+CONFIDENCE:
+- HIGH: direct, explicit, same outcome, same direction, same population.
+- MEDIUM: indirect evidence, subgroup, conditional result, or some interpretation needed.
+- LOW: weak link, short abstract, speculative, different population, or mechanistic evidence.
 
-STEP 2 — EVIDENCE EXTRACTION
-Find the single most informative sentence in the abstract that relates to the claim. \
-Use it verbatim as your "evidence" field. If no single sentence is perfect, \
-use the closest paraphrase in quotes.
-
-STEP 3 — VERDICT (choose the MOST ACCURATE — do not default to safe options)
-  SUPPORTS           → The paper EXPLICITLY measures the claim's outcome AND confirms the
-                       claim in the SAME direction, same population. This includes papers
-                       that study the ABSENCE/WITHDRAWAL of A and find outcome B WORSENS
-                       (logical double-negation inversion: "no A → worse B" = "A → better B").
-  PARTIALLY_SUPPORTS → Related evidence with caveats: different population or subgroup,
-                       indirect measure, small sample, animal/in vitro model, or partial
-                       confirmation. Double-negation studies in subgroups (e.g. one sex only)
-                       should be PARTIALLY_SUPPORTS, not SUPPORTS.
-  CONTRADICTS        → The paper EXPLICITLY measures the claim's outcome AND opposes the
-                       claim IN THE SAME population/context.
-                       CRITICAL: CONTRADICTS requires that the paper measures the SAME outcome
-                       as the claim. A paper measuring cognitive function does NOT contradict
-                       a claim about sleep — assign NEUTRAL instead.
-  NEUTRAL            → (a) The paper is on the same broad topic but does not directly test
-                       the claim's assertion, OR
-                       (b) The paper measures a DIFFERENT outcome than the one in the claim
-                       (outcome mismatch), OR
-                       (c) The paper discusses context, policy, or related factors only.
-  INSUFFICIENT_DATA  → LAST RESORT ONLY. Use ONLY when the abstract has fewer than 60 words
-                       OR is completely unreadable/missing. Do NOT use as a safe default.
-
-━━━ CRITICAL DIRECTION RULES (read carefully) ━━━
-
-▶ OUTCOME MISMATCH — THE MOST IMPORTANT RULE:
-  CONTRADICTS requires that the paper actually measures the SAME outcome as the claim.
-  - Claim: "coffee is beneficial for SLEEP"
-    Paper studies coffee → cognitive function only → NEUTRAL (does not measure sleep)
-    Paper studies coffee → sleep latency → can be CONTRADICTS or SUPPORTS
-  - Claim: "X reduces DEPRESSION"
-    Paper studies X → blood pressure only → NEUTRAL (does not measure depression)
-  - A paper can only CONTRADICT a claim if it measures what the claim asserts.
-    "No evidence of effect" on a DIFFERENT outcome = NEUTRAL, never CONTRADICTS.
-
-▶ NEGATION INVERSION — DOUBLE NEGATION TRAP:
-  A paper that studies the ABSENCE, WITHDRAWAL, or ABSTINENCE of A and finds that
-  outcome B WORSENS is LOGICALLY EQUIVALENT to saying "A improves B".
-  You MUST resolve the double negation BEFORE comparing to the claim.
-
-  CANONICAL EXAMPLES:
-    Claim: "Coffee (caffeine) is beneficial for sleep"
-    Paper: "Caffeine ABSTINENCE was associated with MORE sleep disturbances"
-      Step 1 — resolve: abstinence (no caffeine) → more disturbances (worse sleep)
-      Step 2 — invert:  caffeine present → fewer disturbances (better sleep)
-      Step 3 — compare: "caffeine → better sleep" SUPPORTS "coffee is beneficial for sleep"
-      Verdict: SUPPORTS (or PARTIALLY_SUPPORTS if the effect is only in a subgroup)
-
-    Claim: "Exercise improves mood"
-    Paper: "Exercise deprivation led to significant mood deterioration"
-      Resolved: no exercise → worse mood → exercise → better mood → SUPPORTS
-
-    Claim: "Vitamin D supplementation reduces depression"
-    Paper: "Vitamin D deficiency was associated with higher depression rates"
-      Resolved: no vitamin D → more depression → vitamin D → less depression → SUPPORTS
-
-  SUBGROUP CAVEAT: If the double-negation effect is only in a subgroup (e.g. only in
-  females, only in the elderly), assign PARTIALLY_SUPPORTS, not SUPPORTS.
-
-▶ COMPARATIVE CLAIMS — direction is everything:
-  - "A is better than B" vs "B is better than A" are OPPOSITE claims.
-  - A paper that shows B > A CONTRADICTS "A > B" even if both deal with the same topic.
-  - A paper that shows A > B SUPPORTS "A > B" even if the paper's authors favor B.
-  EXAMPLE:
-    Claim: "Traditional CS is more efficient than Quantum CS"
-    Paper finds: classical simulation on laptop is faster than quantum hardware → SUPPORTS
-    Paper finds: quantum processor outperforms best classical approximation → CONTRADICTS
-
-▶ NEGATION TRAPS — absence of effect ON THE CLAIMED OUTCOME:
-  - "No significant difference", "no association", "no effect", "did not improve"
-    on the SAME outcome → CONTRADICTS (same population) or PARTIALLY_SUPPORTS against
-    (different population).
-  - These rules apply ONLY when the paper measures the same outcome as the claim.
-    If the paper measures a different outcome: NEUTRAL regardless.
-
-▶ SCOPE TRAPS — partial or conditional findings:
-  - If the paper shows an effect only under specific conditions but the claim is general,
-    use PARTIALLY_SUPPORTS.
-  - Absolute claims ("always", "in general") → PARTIALLY_SUPPORTS if only partial confirmation.
-
-▶ TITLE/TOPIC TRAP — do not infer verdict from the paper's subject:
-  - A paper about caffeine/coffee does NOT automatically CONTRADICT a claim about
-    coffee and sleep. Only what the paper MEASURES and FINDS matters.
-  - A paper's title alone never determines the verdict.
-
-━━━ ANTI-HALLUCINATION RULES ━━━
-- Base analysis SOLELY on the abstract and TL;DR provided. Nothing else.
-- Do NOT add knowledge from outside the abstract.
-- Do NOT invent quotes. If quoting, it must appear verbatim in the abstract above.
-- If uncertain between NEUTRAL and PARTIALLY_SUPPORTS: does the abstract contain
-  a finding that even indirectly supports or weakens the SAME outcome as the claim?
-  If yes → PARTIALLY_SUPPORTS. If the outcome differs → NEUTRAL.
-- Mechanistic studies (in vitro, cell culture, animal models): PARTIALLY_SUPPORTS at most
-  with LOW confidence, unless the paper explicitly establishes human causation.
-- Population mismatch rule: if the claim specifies a population and the paper studies a
-  DIFFERENT population, cap the verdict at PARTIALLY_SUPPORTS (MEDIUM or LOW confidence).
-  Never assign CONTRADICTS HIGH across a population gap.
-
-━━━ CONFIDENCE ━━━
-  HIGH   → The abstract directly and explicitly addresses the claim's outcome in the same
-            direction, same population. The verdict is unambiguous.
-  MEDIUM → Indirect evidence, different (but related) population, conditional findings,
-            or requires some interpretation.
-  LOW    → The link is weak, speculative, different population, or the abstract is very short.
-
-━━━ OUTPUT FORMAT ━━━
 Return ONLY a raw JSON object. No markdown. No code fences. No text outside the JSON.
 Required keys:
   "verdict"        : one of SUPPORTS | PARTIALLY_SUPPORTS | CONTRADICTS | NEUTRAL | INSUFFICIENT_DATA
   "confidence"     : one of HIGH | MEDIUM | LOW
-  "relevance_score": integer 0-10 (rate how directly this paper tests the claim's specific outcome)
+  "relevance_score": integer 0-10
   "evidence"       : exact quote or tight paraphrase from the abstract (max 2 sentences)
-  "explanation"    : 1-2 sentences explaining WHY this verdict was chosen, referencing the outcome
+  "explanation"    : 1-2 sentences explaining why this verdict was chosen, referencing the outcome
   "key_finding"    : the single most important result of the paper in one sentence
 """
 
 _OVERALL_VERDICT = """\
-You are a senior scientist synthesizing evidence from multiple peer-reviewed papers \
-to issue a final verdict on a scientific claim.
+You are a senior scientist synthesizing evidence from multiple peer-reviewed papers to issue a final verdict on a scientific claim.
 
 CLAIM: {claim}
 
 INDIVIDUAL PAPER ANALYSES:
 {analyses_text}
 
-━━━ YOUR TASK ━━━
-Think step by step before concluding:
+TASK:
 
-1. CLAIM DIRECTION — first, identify what the claim asserts:
-   - Intervention/subject, outcome/object, and direction (A improves B? A causes B? A > B?)
-   - This is your reference frame for the entire synthesis.
+1. IDENTIFY THE CLAIM
+Determine the intervention/subject, outcome/object, and direction of the claim.
+Use this as the reference frame for the synthesis.
 
-2. FILTER by relevance first:
-   - Separate papers with relevance_score >= 4 ("relevant papers") from those with score < 4.
-   - Base your verdict and confidence ONLY on relevant papers (score >= 4).
-   - Papers with relevance_score < 4 are background noise — do NOT let them drive the verdict.
-   - If fewer than 2 papers have relevance_score >= 4, set overall_confidence to LOW
-     and strongly consider INSUFFICIENT_EVIDENCE.
+2. FILTER BY RELEVANCE
+- Relevant papers: relevance_score >= 4
+- Non-relevant papers: relevance_score < 4
+Base the verdict primarily on relevant papers.
+If fewer than 2 relevant papers exist, overall_confidence must be LOW and INSUFFICIENT_EVIDENCE should be strongly considered.
 
-3. Among RELEVANT papers (score >= 4), count by verdict:
-   - Supporting (SUPPORTS + PARTIALLY_SUPPORTS): how many?
-   - Contradicting (CONTRADICTS): how many?
-   - Neutral/Unclear (NEUTRAL + INSUFFICIENT_DATA): how many?
+3. COUNT RELEVANT EVIDENCE
+Among papers with relevance_score >= 4:
+- Supporting = SUPPORTS + PARTIALLY_SUPPORTS
+- Contradicting = CONTRADICTS
+- Neutral/unclear = NEUTRAL + INSUFFICIENT_DATA
 
-4. Weigh evidence quality, not just quantity:
-   - HIGH confidence papers count more than LOW confidence.
-   - One strong contradicting paper (HIGH conf, high relevance) can outweigh several weak supports.
-   - PARTIALLY_SUPPORTS papers from different populations carry less weight.
-   - DOUBLE-NEGATION CHECK: before counting a paper as CONTRADICTS, verify that its
-     key_finding actually opposes the claim direction. A finding like "abstinence from A
-     worsens B" logically SUPPORTS "A improves B" — recount it as SUPPORTS if mislabeled.
+4. WEIGH QUALITY, NOT JUST COUNT
+- HIGH-confidence relevant papers count more than LOW-confidence ones.
+- One strong relevant contradiction can outweigh several weak supports.
+- PARTIALLY_SUPPORTS from different populations or narrow subgroups carries less weight.
+- Apply NEGATION INVERSION before counting contradiction:
+  if a paper says absence/withdrawal of A worsens B, this supports "A improves B".
 
-5. Apply these verdict rules in order (based ONLY on relevant papers):
-   SUPPORTED            → Clear majority of relevant papers confirm the claim in the SAME
-                          direction. Evidence is direct and from the same population.
-   PARTIALLY_SUPPORTED  → More support than contradiction, but evidence has caveats, population
-                          differences, or limited scope. When uncertain, prefer this over SUPPORTED.
-   CONTRADICTED         → Majority of RELEVANT papers oppose the claim in the same direction,
-                          or key high-quality relevant papers directly refute it.
-   MIXED                → Roughly equal evidence on both sides among relevant papers;
-                          genuine scientific debate.
-   INSUFFICIENT_EVIDENCE→ Use when fewer than 2 relevant papers (score >= 4) have a concrete
-                          verdict (SUPPORTS / PARTIALLY_SUPPORTS / CONTRADICTS). If most papers
-                          are off-topic (low relevance_score), this is likely the right choice.
+5. FINAL VERDICT RULES
+- SUPPORTED:
+  clear majority of relevant papers confirm the claim in the same direction.
+- PARTIALLY_SUPPORTED:
+  more support than contradiction, but with caveats, population differences, or limited scope.
+- CONTRADICTED:
+  majority of relevant papers oppose the claim, or key high-quality relevant papers directly refute it.
+- MIXED:
+  genuinely balanced evidence on both sides among relevant papers.
+- INSUFFICIENT_EVIDENCE:
+  fewer than 2 relevant papers with a concrete verdict, or most papers are off-topic / neutral.
 
-6. Confidence calibration:
-   HIGH   → ≥3 relevant HIGH-confidence papers agree; little contradiction among relevant papers.
-   MEDIUM → 2 relevant papers, or mixed quality, or partially-relevant populations.
-   LOW    → Fewer than 2 relevant papers, or evidence is highly mixed among relevant papers.
-   → IMPORTANT: If the verdict is based on ≤2 relevant papers out of many total papers,
-     the confidence MUST be LOW or MEDIUM, never HIGH.
+6. CONFIDENCE
+- HIGH: at least 3 relevant HIGH-confidence papers agree, with little relevant contradiction.
+- MEDIUM: 2 relevant papers, or mixed quality, or partial relevance.
+- LOW: fewer than 2 relevant papers, or highly mixed evidence.
+- Never assign HIGH if the verdict rests on 2 or fewer relevant papers.
 
-7. Note in verdict_explanation how many relevant papers (score >= 4) vs total papers were found.
-   Example: "Only 2 of 10 papers had relevance_score ≥ 4 and directly tested the claim."
-8. Translate non-English claims before evaluating.
-9. Specific numbers/dosages not confirmed by any relevant paper → CONTRADICTED or PARTIALLY_SUPPORTED.
+7. EXPLANATION REQUIREMENTS
+- Mention how many relevant papers (score >= 4) were found versus total papers.
+- Cite 1-2 paper titles by name in the explanation.
+- Translate non-English claims before evaluating them.
+- If a specific number/dosage in the claim is not confirmed by relevant papers, prefer CONTRADICTED or PARTIALLY_SUPPORTED.
 
-━━━ OUTPUT FORMAT ━━━
 Return ONLY a raw JSON object. No markdown. No code fences.
 Required keys:
   "overall_verdict"     : one of SUPPORTED | PARTIALLY_SUPPORTED | CONTRADICTED | MIXED | INSUFFICIENT_EVIDENCE
@@ -291,97 +199,99 @@ Required keys:
 """
 
 _LITERATURE_REVIEW = """\
-You are a senior academic researcher writing a rigorous literature review for a \
-peer-reviewed journal. Use ONLY the papers provided below. Do not cite or invent \
-any other sources.
+You are a senior academic researcher writing a rigorous literature review for a peer-reviewed journal.
+
+Use ONLY the papers provided below. Do not cite or invent any other sources.
 
 TOPIC: {topic}
 
 PAPERS:
 {papers_text}
 
-━━━ STRUCTURE (follow exactly) ━━━
+Write the review using exactly this structure:
 
 **1. Introduction** (1 paragraph)
-Introduce the research area, explain why it is scientifically and/or clinically \
-important, and state the scope of this review.
+Introduce the research area, explain why it is scientifically and/or clinically important, and define the scope of this review.
 
 **2. Main Findings** (2-3 paragraphs)
-Group papers thematically. Highlight points of consensus and disagreement. \
-For each key claim, cite the relevant papers. Note sample sizes or effect sizes if mentioned.
+Group papers thematically. Highlight consensus, disagreement, and major patterns.
+For each key claim, cite the relevant papers. Mention sample sizes or effect sizes if stated.
 
 **3. Methodological Considerations** (1 paragraph)
-Discuss study designs used (RCT, observational, meta-analysis, etc.), \
-populations studied, and key limitations mentioned by the authors.
+Discuss study designs, populations, and main limitations explicitly mentioned by the authors.
 
 **4. State of Evidence & Open Questions** (1 paragraph)
-Summarize the overall strength of evidence. Identify gaps, contradictions, \
-and the most important unanswered questions for future research.
+Summarize overall evidence strength, unresolved contradictions, evidence gaps, and the most important open questions.
 
-━━━ STYLE RULES ━━━
-- Cite as [First Author et al., Year] inline.
-- Formal academic register. No bullet points in the review body.
-- Every sentence must add information — no padding.
+RULES:
+- Cite inline as [First Author et al., Year].
+- Formal academic register.
+- No bullet points in the review body.
+- Every sentence must add information.
 - Minimum 400 words.
+- Use only information present in the provided papers.
 """
 
 _SUMMARIZE = """\
-You are an expert academic research assistant. Produce a thorough, structured summary \
-of the paper below, based STRICTLY on the provided abstract. \
-Do NOT add external knowledge or invent details not present in the abstract.
+You are an expert academic research assistant.
+
+Task: produce a thorough, structured summary of the paper below based STRICTLY on the provided abstract.
+Do NOT add external knowledge or invent details.
 
 Title:    {title}
 Year:     {year}
 Authors:  {authors}
 Abstract: {abstract}
 
-━━━ REQUIRED STRUCTURE ━━━
+Follow exactly this structure:
 
 **🎯 Objective**
-What specific question or hypothesis does this study address? \
+What specific question or hypothesis does this study address?
 What gap in the literature does it aim to fill?
 
 **🔬 Methodology**
-Study design (RCT, cohort, meta-analysis, etc.), population or sample, \
-intervention or exposure, and outcome measures. Include numbers if stated.
+Study design, population or sample, intervention or exposure, and outcome measures.
+Include numbers if stated.
 
 **📊 Key Findings**
-The main results. Quote exact numbers, percentages, p-values, or effect sizes \
-if present in the abstract. What did the authors conclude?
+Main results only.
+Quote exact numbers, percentages, p-values, or effect sizes if present.
+State what the authors concluded.
 
 **⚠️ Limitations**
-Any limitations explicitly mentioned in the abstract. \
+Any limitations explicitly mentioned in the abstract.
 If none are stated: write "Not reported in abstract."
 
 **💡 Why It Matters**
 Scientific significance, practical implications, and who should care about these results.
 
-━━━ RULES ━━━
-- Stay strictly within what the abstract says.
-- Never use vague phrases like "the study found interesting results."
-- If the abstract is short, extract maximum value from what is there.
+RULES:
+- Stay strictly within the abstract.
+- Do not invent missing details.
+- Avoid vague phrasing.
+- If the abstract is short, extract the maximum supported information from it.
 """
 
 _TOPIC_QUERIES = """\
-You are a senior academic librarian with expertise in systematic literature search.
-Your task: generate {n_queries} DISTINCT, high-yield Semantic Scholar search queries for the topic below.
+You are a senior academic librarian specialized in systematic literature search.
+
+Task: generate exactly {n_queries} DISTINCT, high-yield Semantic Scholar search queries for the topic below.
 
 TOPIC: {topic}
 
 STRATEGY:
-- Query 1: the core concept and main keywords (most specific to the topic).
-- Query 2: a specific subtopic, mechanism, or clinical application directly within this field.
-- Query 3: the broader scientific or clinical context — still within the field, not adjacent.
-- Query 4+ (if requested): alternative angles, specific populations, or methodological variations
-  that would surface papers from a different research community on the SAME topic.
+- Query 1: core concept and main keywords (most specific).
+- Query 2: specific subtopic, mechanism, or clinical application within the field.
+- Query 3: broader scientific or clinical context still directly within the field.
+- Query 4+ (if requested): alternative angles, specific populations, or methodological variations on the same topic.
 
 RULES:
-- All queries in English. 3 to 7 keywords each. No stopwords.
+- All queries must be in English.
+- 3 to 7 keywords per query.
+- No stopwords.
 - Queries must be meaningfully different from each other.
-- Every query must remain TIGHTLY scoped to the topic. Do NOT drift into adjacent fields.
-  Example for "Large language models clinical decision support":
-  GOOD: "LLM clinical decision support accuracy", "GPT medical diagnosis benchmark"
-  BAD:  "AI ethics higher education", "machine learning genomics" (too distant)
+- Keep every query tightly scoped to the topic.
+- Do not drift into adjacent fields.
 
 Return ONLY a valid JSON array of exactly {n_queries} strings.
 """
