@@ -3,7 +3,7 @@ import logging
 import os
 import base64
 from typing import Optional
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
 import httpx
 from fastapi import FastAPI, Request
@@ -80,6 +80,29 @@ def _cache_set_summary(pid: str, summary: str):
 def _sse(event_type: str, data: dict) -> str:
     payload = json.dumps({"type": event_type, **data}, ensure_ascii=False)
     return f"data: {payload}\n\n"
+
+
+def _run_with_heartbeat(
+    fn,
+    *args,
+    message: str,
+    step: Optional[int] = None,
+    total: Optional[int] = None,
+    interval: float = 8.0,
+    **kwargs,
+):
+    future = executor.submit(fn, *args, **kwargs)
+    while True:
+        try:
+            yield {"kind": "result", "value": future.result(timeout=interval)}
+            return
+        except FutureTimeoutError:
+            payload = {"message": message}
+            if step is not None:
+                payload["step"] = step
+            if total is not None:
+                payload["total"] = total
+            yield {"kind": "heartbeat", "value": payload}
 
 
 def _paper_cache_key(paper: dict) -> str:
@@ -170,10 +193,36 @@ def verify_claim(req: ClaimRequest):
                 return
 
             yield _sse("progress", {"message": "Generating search queries…", "step": 1, "total": 4})
-            base_queries = analyzer.transform_query(req.claim, topic_mode=False, max_papers=req.max_papers)
+            base_queries = None
+            for update in _run_with_heartbeat(
+                analyzer.transform_query,
+                req.claim,
+                topic_mode=False,
+                max_papers=req.max_papers,
+                message="Generating search queries…",
+                step=1,
+                total=4,
+            ):
+                if update["kind"] == "heartbeat":
+                    yield _sse("progress", update["value"])
+                else:
+                    base_queries = update["value"]
 
             yield _sse("progress", {"message": "Searching literature…", "step": 2, "total": 4})
-            papers = _fetch_papers(base_queries, req.max_papers, req.year_filter)
+            papers = None
+            for update in _run_with_heartbeat(
+                _fetch_papers,
+                base_queries,
+                req.max_papers,
+                req.year_filter,
+                message="Searching literature…",
+                step=2,
+                total=4,
+            ):
+                if update["kind"] == "heartbeat":
+                    yield _sse("progress", update["value"])
+                else:
+                    papers = update["value"]
 
             if not papers:
                 yield _sse("error", {"message": "No papers found. Try rephrasing."})
@@ -189,7 +238,20 @@ def verify_claim(req: ClaimRequest):
             for i, paper in enumerate(papers):
                 pid      = paper.get("paperId", "")
                 cached   = cache.get_analysis(pid, req.claim)
-                analysis = cached if cached else analyzer.analyze_paper(paper, req.claim)
+                analysis = cached
+                if not analysis:
+                    for update in _run_with_heartbeat(
+                        analyzer.analyze_paper,
+                        paper,
+                        req.claim,
+                        message=f"Analysing paper {i + 1} / {len(papers)}…",
+                        step=3,
+                        total=4,
+                    ):
+                        if update["kind"] == "heartbeat":
+                            yield _sse("progress", update["value"])
+                        else:
+                            analysis = update["value"]
                 if not cached and pid:
                     cache.set_analysis(pid, req.claim, analysis)
                 yield _sse("analysis", {
@@ -231,7 +293,20 @@ def verify_claim(req: ClaimRequest):
                     pid    = paper.get("paperId", "")
                     seen_ids.add(pid)
                     cached   = cache.get_analysis(pid, req.claim)
-                    analysis = cached if cached else analyzer.analyze_paper(paper, req.claim)
+                    analysis = cached
+                    if not analysis:
+                        for update in _run_with_heartbeat(
+                            analyzer.analyze_paper,
+                            paper,
+                            req.claim,
+                            message=f"Analysing paper {retry_base + j + 1} / {retry_total}…",
+                            step=3,
+                            total=4,
+                        ):
+                            if update["kind"] == "heartbeat":
+                                yield _sse("progress", update["value"])
+                            else:
+                                analysis = update["value"]
                     if not cached and pid:
                         cache.set_analysis(pid, req.claim, analysis)
                     yield _sse("analysis", {
@@ -256,7 +331,19 @@ def verify_claim(req: ClaimRequest):
                 })
 
             yield _sse("progress", {"message": "Synthesizing verdict…", "step": 4, "total": 4})
-            overall = analyzer.overall_verdict(req.claim, all_results)
+            overall = None
+            for update in _run_with_heartbeat(
+                analyzer.overall_verdict,
+                req.claim,
+                all_results,
+                message="Synthesizing verdict…",
+                step=4,
+                total=4,
+            ):
+                if update["kind"] == "heartbeat":
+                    yield _sse("progress", update["value"])
+                else:
+                    overall = update["value"]
             yield _sse("verdict", {"data": overall})
             yield _sse("done", {})
 
@@ -274,10 +361,36 @@ def literature_review(req: TopicRequest):
     def generate():
         try:
             yield _sse("progress", {"message": "Generating search queries…", "step": 1, "total": 3})
-            base_queries = analyzer.transform_query(req.topic, topic_mode=True, max_papers=req.max_papers)
+            base_queries = None
+            for update in _run_with_heartbeat(
+                analyzer.transform_query,
+                req.topic,
+                topic_mode=True,
+                max_papers=req.max_papers,
+                message="Generating search queries…",
+                step=1,
+                total=3,
+            ):
+                if update["kind"] == "heartbeat":
+                    yield _sse("progress", update["value"])
+                else:
+                    base_queries = update["value"]
 
             yield _sse("progress", {"message": "Searching literature…", "step": 2, "total": 3})
-            papers = _fetch_papers(base_queries, req.max_papers, req.year_filter)
+            papers = None
+            for update in _run_with_heartbeat(
+                _fetch_papers,
+                base_queries,
+                req.max_papers,
+                req.year_filter,
+                message="Searching literature…",
+                step=2,
+                total=3,
+            ):
+                if update["kind"] == "heartbeat":
+                    yield _sse("progress", update["value"])
+                else:
+                    papers = update["value"]
 
             if not papers:
                 yield _sse("error", {"message": "No papers found. Try rephrasing."})
@@ -291,7 +404,20 @@ def literature_review(req: TopicRequest):
             for i, paper in enumerate(papers):
                 pid      = paper.get("paperId", "")
                 cached   = cache.get_analysis(pid, req.topic)
-                analysis = cached if cached else analyzer.analyze_paper(paper, req.topic)
+                analysis = cached
+                if not analysis:
+                    for update in _run_with_heartbeat(
+                        analyzer.analyze_paper,
+                        paper,
+                        req.topic,
+                        message=f"Analysing paper {i + 1} / {len(papers)}…",
+                        step=2,
+                        total=3,
+                    ):
+                        if update["kind"] == "heartbeat":
+                            yield _sse("progress", update["value"])
+                        else:
+                            analysis = update["value"]
                 if not cached and pid:
                     cache.set_analysis(pid, req.topic, analysis)
                 yield _sse("analysis", {
@@ -329,7 +455,20 @@ def literature_review(req: TopicRequest):
                     pid = paper.get("paperId", "")
                     seen_ids.add(pid)
                     cached   = cache.get_analysis(pid, req.topic)
-                    analysis = cached if cached else analyzer.analyze_paper(paper, req.topic)
+                    analysis = cached
+                    if not analysis:
+                        for update in _run_with_heartbeat(
+                            analyzer.analyze_paper,
+                            paper,
+                            req.topic,
+                            message=f"Analysing paper {retry_base + j + 1} / {retry_total}…",
+                            step=2,
+                            total=3,
+                        ):
+                            if update["kind"] == "heartbeat":
+                                yield _sse("progress", update["value"])
+                            else:
+                                analysis = update["value"]
                     if not cached and pid:
                         cache.set_analysis(pid, req.topic, analysis)
                     yield _sse("analysis", {
@@ -352,7 +491,19 @@ def literature_review(req: TopicRequest):
                 })
 
             yield _sse("progress", {"message": "Writing literature review…", "step": 3, "total": 3})
-            review = analyzer.literature_review(req.topic, all_results)
+            review = None
+            for update in _run_with_heartbeat(
+                analyzer.literature_review,
+                req.topic,
+                all_results,
+                message="Writing literature review…",
+                step=3,
+                total=3,
+            ):
+                if update["kind"] == "heartbeat":
+                    yield _sse("progress", update["value"])
+                else:
+                    review = update["value"]
             yield _sse("review", {"data": review})
             yield _sse("done", {})
 
@@ -399,9 +550,31 @@ def search_papers(req: TopicRequest):
     def generate():
         try:
             yield _sse("progress", {"message": "Generating search queries…"})
-            queries = analyzer.transform_query(req.topic, topic_mode=True, max_papers=req.max_papers)
+            queries = None
+            for update in _run_with_heartbeat(
+                analyzer.transform_query,
+                req.topic,
+                topic_mode=True,
+                max_papers=req.max_papers,
+                message="Generating search queries…",
+            ):
+                if update["kind"] == "heartbeat":
+                    yield _sse("progress", update["value"])
+                else:
+                    queries = update["value"]
             yield _sse("progress", {"message": "Searching…"})
-            papers = _fetch_papers(queries, req.max_papers, req.year_filter)
+            papers = None
+            for update in _run_with_heartbeat(
+                _fetch_papers,
+                queries,
+                req.max_papers,
+                req.year_filter,
+                message="Searching…",
+            ):
+                if update["kind"] == "heartbeat":
+                    yield _sse("progress", update["value"])
+                else:
+                    papers = update["value"]
             if not papers:
                 yield _sse("error", {"message": "No papers found. Try rephrasing."})
                 yield _sse("done", {})

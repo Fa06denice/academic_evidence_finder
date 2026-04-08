@@ -33,6 +33,9 @@ export async function streamPost(path, body, handlers = {}) {
   const url = API_BASE + path
   console.log('[API] POST', url, JSON.stringify(body))
 
+  let sawDone = false
+  let failed = false
+
   let res
   try {
     res = await fetch(url, {
@@ -42,8 +45,8 @@ export async function streamPost(path, body, handlers = {}) {
     })
   } catch (err) {
     console.error('[API] Network error', err)
+    failed = true
     handlers.onError?.({ message: 'Network error: ' + err.message })
-    handlers.onDone?.()
     return
   }
 
@@ -51,8 +54,8 @@ export async function streamPost(path, body, handlers = {}) {
     let detail = res.statusText
     try { const j = await res.json(); detail = JSON.stringify(j) } catch {}
     console.error('[API] HTTP', res.status, detail)
+    failed = true
     handlers.onError?.({ message: 'HTTP ' + res.status + ': ' + detail })
-    handlers.onDone?.()
     return
   }
 
@@ -75,15 +78,22 @@ export async function streamPost(path, body, handlers = {}) {
           let evt
           try { evt = JSON.parse(raw) } catch { continue }
           console.log('[SSE]', evt.type, evt)
+          if (evt.type === 'done') sawDone = true
           dispatch(evt, handlers)
         }
       }
     }
   } catch (err) {
     console.error('[SSE] read error', err)
+    failed = true
     handlers.onError?.({ message: 'Stream error: ' + err.message })
   }
 
+  if (failed) return
+  if (!sawDone) {
+    handlers.onError?.({ message: 'Stream ended unexpectedly before completion.' })
+    return
+  }
   handlers.onDone?.()
 }
 
@@ -97,7 +107,7 @@ function dispatch(evt, h) {
     case 'sources':  h.onSources?.(evt.data);  break
     case 'token':    h.onToken?.(evt);         break
     case 'warning':  h.onWarning?.(evt);       break  // low relevance disclaimer
-    case 'done':     h.onDone?.();             break
+    case 'done':                                  break
     case 'error':    h.onError?.(evt);         break
   }
 }
