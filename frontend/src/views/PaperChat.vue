@@ -138,7 +138,49 @@
                 ? 'bg-accent/20 border border-accent/30 text-white rounded-2xl rounded-tr-sm'
                 : 'bg-surface2 border border-border text-muted rounded-2xl rounded-tl-sm'"
                 class="max-w-sm px-4 py-3 text-sm leading-relaxed whitespace-pre-wrap">
-                {{ msg.content }}<span v-if="msg.streaming" class="inline-block w-1.5 h-4 bg-accent/60 animate-pulse ml-0.5 align-middle"></span>
+                <template v-if="msg.role === 'assistant'">
+                  <template v-for="(part, partIdx) in renderMessageParts(msg.content)" :key="partIdx">
+                    <span v-if="part.type === 'text'">{{ part.value }}</span>
+                    <span v-else class="inline-flex items-center gap-1 align-middle">
+                      <button
+                        v-for="id in part.ids"
+                        :key="id"
+                        type="button"
+                        @click="jumpToSource(findMessageSource(msg, id))"
+                        class="inline-flex rounded-md border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold text-accent hover:bg-accent/20"
+                      >
+                        {{ id }}
+                      </button>
+                    </span>
+                  </template>
+                </template>
+                <template v-else>
+                  {{ msg.content }}
+                </template>
+                <span v-if="msg.streaming" class="inline-block w-1.5 h-4 bg-accent/60 animate-pulse ml-0.5 align-middle"></span>
+
+                <div v-if="msg.role === 'assistant' && msg.sources?.length" class="mt-3 border-t border-border/60 pt-3 space-y-2">
+                  <div class="text-[10px] font-semibold uppercase tracking-wider text-muted">Sources Used</div>
+                  <button
+                    v-for="source in msg.sources"
+                    :key="source.id"
+                    type="button"
+                    @click="jumpToSource(source)"
+                    class="block w-full rounded-xl border px-3 py-2 text-left transition-all"
+                    :class="activeSourceId === source.id
+                      ? 'border-accent/40 bg-accent/10'
+                      : 'border-border bg-surface hover:border-accent/30'"
+                  >
+                    <div class="mb-1 flex items-center gap-2">
+                      <span class="inline-flex rounded-md border border-accent/30 bg-accent/10 px-1.5 py-0.5 text-[10px] font-semibold text-accent">
+                        {{ source.id }}
+                      </span>
+                      <span class="text-[11px] font-medium text-white">{{ source.locator }}</span>
+                      <span v-if="source.page" class="ml-auto text-[10px] text-muted">p. {{ source.page }}</span>
+                    </div>
+                    <p class="text-xs leading-relaxed text-muted whitespace-pre-wrap">{{ source.excerpt }}</p>
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -182,6 +224,8 @@ const messages   = ref([])
 const question   = ref('')
 const streaming  = ref(false)
 const messagesEl = ref(null)
+const focusedPage = ref(1)
+const activeSourceId = ref('')
 
 // ── Derived state ─────────────────────────────────────────────────────────────
 
@@ -193,7 +237,7 @@ const sourceStatus = computed(() => {
 })
 
 const pdfDataUrl = computed(() =>
-  pdfB64.value ? `data:application/pdf;base64,${pdfB64.value}` : ''
+  pdfB64.value ? `data:application/pdf;base64,${pdfB64.value}#page=${focusedPage.value || 1}` : ''
 )
 
 const paperDoi = computed(() => paper.value?.externalIds?.DOI || '')
@@ -230,6 +274,8 @@ async function loadPaperObject(p) {
   fetchAvail.value  = false
   messages.value    = []
   paper.value       = null
+  focusedPage.value = 1
+  activeSourceId.value = ''
 
   try {
     const res = await post('/api/paper/fetch', { paper: p })
@@ -253,9 +299,10 @@ async function sendQuestion(q) {
   messages.value.push({ role: 'user', content: q })
   scrollToBottom()
 
-  const assistantMsg = { role: 'assistant', content: '', streaming: true }
+  const assistantMsg = { role: 'assistant', content: '', streaming: true, sources: [] }
   messages.value.push(assistantMsg)
   streaming.value = true
+  activeSourceId.value = ''
 
   const history = messages.value
     .slice(0, -1)
@@ -263,6 +310,10 @@ async function sendQuestion(q) {
 
   await streamPost('/api/paper/chat', { paper: paper.value, question: q, history }, {
     onToken(t)  { assistantMsg.content += t.text; scrollToBottom() },
+    onSources(data) {
+      assistantMsg.sources = data?.used?.length ? data.used : (data?.all || [])
+      scrollToBottom()
+    },
     onDone()    { assistantMsg.streaming = false; streaming.value = false },
     onError(e)  {
       assistantMsg.content   = '⚠️ ' + (e.message || 'An error occurred.')
@@ -284,5 +335,38 @@ function reset() {
   messages.value    = []
   pidInput.value    = ''
   fetchError.value  = ''
+  focusedPage.value = 1
+  activeSourceId.value = ''
+}
+
+function renderMessageParts(text) {
+  const parts = []
+  const regex = /(\[S\d+(?:,\s*S\d+)*\])/g
+  let lastIndex = 0
+  for (const match of text.matchAll(regex)) {
+    const index = match.index ?? 0
+    if (index > lastIndex) {
+      parts.push({ type: 'text', value: text.slice(lastIndex, index) })
+    }
+    parts.push({
+      type: 'citation',
+      ids: match[1].slice(1, -1).split(',').map(id => id.trim()).filter(Boolean),
+    })
+    lastIndex = index + match[1].length
+  }
+  if (lastIndex < text.length) {
+    parts.push({ type: 'text', value: text.slice(lastIndex) })
+  }
+  return parts.length ? parts : [{ type: 'text', value: text }]
+}
+
+function findMessageSource(message, id) {
+  return (message.sources || []).find(source => source.id === id)
+}
+
+function jumpToSource(source) {
+  if (!source) return
+  activeSourceId.value = source.id
+  if (source.page) focusedPage.value = source.page
 }
 </script>

@@ -1,8 +1,10 @@
 """paper_chat.py — PDF fetch, parse, HTML full-text, and chat logic."""
 import io
 import logging
+import math
 import os
 import re
+from collections import Counter
 from typing import Optional
 
 import httpx
@@ -19,6 +21,20 @@ _HEADERS = {
 _CHUNK_SIZE   = 800
 _MAX_CHUNKS   = 6
 _TIMEOUT      = 15
+_RAG_CHUNK_WORDS   = 180
+_RAG_CHUNK_OVERLAP = 45
+
+_STOPWORDS = {
+    "a", "about", "after", "all", "also", "an", "and", "are", "as", "at", "be",
+    "because", "been", "before", "being", "between", "both", "but", "by", "can",
+    "could", "did", "do", "does", "during", "each", "for", "from", "had", "has",
+    "have", "how", "if", "in", "into", "is", "it", "its", "may", "might", "more",
+    "most", "no", "not", "of", "on", "or", "our", "out", "paper", "should",
+    "study", "such", "than", "that", "the", "their", "them", "there", "these",
+    "they", "this", "those", "through", "to", "under", "use", "used", "using",
+    "was", "we", "were", "what", "when", "where", "which", "while", "who", "why",
+    "will", "with", "within", "would", "you", "your",
+}
 
 # ── System prompt ─────────────────────────────────────────────────────────────
 
@@ -50,6 +66,35 @@ PAPER CONTENT:
    work within that limitation without apology.
 """
 
+_RAG_SYSTEM_PROMPT = """\
+You are a precise academic paper assistant.
+
+You must answer ONLY from the retrieved source passages below.
+Each passage comes from the same paper and has a source ID such as [S1], [S2], etc.
+
+PAPER:
+Title:   {title}
+Authors: {authors}
+Year:    {year}
+DOI:     {doi}
+Content source: {source}
+
+QUESTION:
+{question}
+
+RETRIEVED SOURCES:
+{sources_block}
+
+STRICT RULES:
+1. Answer ONLY using the retrieved sources above.
+2. Every factual claim must cite at least one source ID immediately after it, e.g. [S1] or [S1, S2].
+3. Never cite a source ID that was not provided.
+4. If the retrieved sources do not contain enough evidence, say so explicitly.
+5. If the paper content available is only an abstract, mention that once and stay within that limit.
+6. Prefer direct, compact answers. Lead with the answer, then the evidence.
+7. When quoting, quote verbatim and keep the citation right after the quote.
+"""
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _get(url: str, **kwargs) -> Optional[httpx.Response]:
@@ -74,6 +119,36 @@ def _clean_html_text(soup: BeautifulSoup, selectors_to_remove: list[str] = None)
             for tag in soup.select(sel):
                 tag.decompose()
     return re.sub(r"\n{3,}", "\n\n", soup.get_text(separator="\n")).strip()
+
+
+def _normalize_ws(text: str) -> str:
+    return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def _tokenize(text: str) -> list[str]:
+    return [
+        tok for tok in re.findall(r"\b[a-z0-9][a-z0-9\-]{1,}\b", (text or "").lower())
+        if tok not in _STOPWORDS
+    ]
+
+
+def _is_heading(line: str) -> bool:
+    s = line.strip()
+    if not s:
+        return False
+    if len(s) > 90 or len(s.split()) > 12:
+        return False
+    if s.endswith("."):
+        return False
+    if re.match(r"^\d+(\.\d+)*\s+[A-Z]", s):
+        return True
+    if s.isupper() and len(s.split()) <= 8:
+        return True
+    if re.match(r"^[A-Z][A-Za-z0-9/\-\s]{2,}$", s) and sum(ch.isupper() for ch in s) >= 2:
+        return True
+    common = {"abstract", "introduction", "background", "methods", "methodology",
+              "results", "discussion", "conclusion", "limitations", "findings"}
+    return s.lower() in common
 
 
 # ── Source 1 : Semantic Scholar openAccessPdf ─────────────────────────────────
@@ -335,6 +410,256 @@ def extract_text_from_pdf(pdf_bytes: bytes) -> str:
     except Exception as exc:
         logger.error("PDF text extraction failed: %s", exc)
         return ""
+
+
+def extract_text_pages_from_pdf(pdf_bytes: bytes) -> list[dict]:
+    pages: list[dict] = []
+    try:
+        doc = fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf")
+        for page_idx, page in enumerate(doc, start=1):
+            text = _normalize_ws(page.get_text())
+            if text:
+                pages.append({
+                    "page": page_idx,
+                    "section": f"Page {page_idx}",
+                    "text": text,
+                })
+        doc.close()
+    except Exception as exc:
+        logger.error("PDF page extraction failed: %s", exc)
+    return pages
+
+
+def _split_word_windows(text: str,
+                        chunk_words: int = _RAG_CHUNK_WORDS,
+                        overlap_words: int = _RAG_CHUNK_OVERLAP) -> list[tuple[str, int, int]]:
+    words = text.split()
+    if not words:
+        return []
+
+    windows: list[tuple[str, int, int]] = []
+    step = max(1, chunk_words - overlap_words)
+
+    for start in range(0, len(words), step):
+        end = min(len(words), start + chunk_words)
+        chunk = " ".join(words[start:end]).strip()
+        if chunk:
+            windows.append((chunk, start, end))
+        if end >= len(words):
+            break
+    return windows
+
+
+def _split_text_sections(text: str, source: str) -> list[dict]:
+    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
+    if not lines:
+        return []
+
+    default_section = "Abstract" if "abstract" in source.lower() else "Document"
+    sections: list[dict] = []
+    current_title = default_section
+    current_lines: list[str] = []
+
+    for line in lines:
+        if _is_heading(line):
+            if current_lines:
+                sections.append({
+                    "section": current_title,
+                    "text": "\n".join(current_lines).strip(),
+                })
+                current_lines = []
+            current_title = line.strip(": ")
+        else:
+            current_lines.append(line)
+
+    if current_lines:
+        sections.append({
+            "section": current_title,
+            "text": "\n".join(current_lines).strip(),
+        })
+
+    return [section for section in sections if section["text"]]
+
+
+def build_rag_chunks(full_text: str, source: str, pdf_bytes: Optional[bytes] = None) -> list[dict]:
+    chunks: list[dict] = []
+
+    if pdf_bytes:
+        for page in extract_text_pages_from_pdf(pdf_bytes):
+            for idx, (chunk_text, word_start, word_end) in enumerate(_split_word_windows(page["text"])):
+                chunks.append({
+                    "section": page["section"],
+                    "page": page["page"],
+                    "word_start": word_start,
+                    "word_end": word_end,
+                    "text": chunk_text,
+                    "locator": f"Page {page['page']}",
+                    "chunk_index": idx,
+                })
+    else:
+        for section in _split_text_sections(full_text, source):
+            for idx, (chunk_text, word_start, word_end) in enumerate(_split_word_windows(section["text"])):
+                chunks.append({
+                    "section": section["section"],
+                    "page": None,
+                    "word_start": word_start,
+                    "word_end": word_end,
+                    "text": chunk_text,
+                    "locator": section["section"],
+                    "chunk_index": idx,
+                })
+
+    if not chunks and full_text.strip():
+        fallback = _normalize_ws(full_text)
+        for idx, (chunk_text, word_start, word_end) in enumerate(_split_word_windows(fallback)):
+            chunks.append({
+                "section": "Abstract" if "abstract" in source.lower() else "Document",
+                "page": None,
+                "word_start": word_start,
+                "word_end": word_end,
+                "text": chunk_text,
+                "locator": "Abstract" if "abstract" in source.lower() else "Document",
+                "chunk_index": idx,
+            })
+
+    return chunks
+
+
+def retrieve_relevant_sources(chunks: list[dict], question: str,
+                              max_sources: int = _MAX_CHUNKS) -> list[dict]:
+    if not chunks:
+        return []
+
+    query_terms = _tokenize(question)
+    if not query_terms:
+        selected = chunks[:max_sources]
+        return [
+            {**chunk, "source_id": f"S{i + 1}", "score": float(max_sources - i)}
+            for i, chunk in enumerate(selected)
+        ]
+
+    tokenized_chunks = []
+    doc_freq = Counter()
+    for chunk in chunks:
+        tokens = _tokenize(chunk["text"])
+        tokenized_chunks.append(tokens)
+        for token in set(tokens):
+            doc_freq[token] += 1
+
+    avgdl = sum(len(tokens) for tokens in tokenized_chunks) / max(len(tokenized_chunks), 1)
+    k1 = 1.5
+    b = 0.75
+
+    query_phrases = [
+        phrase.lower() for phrase in re.findall(r'"([^"]+)"', question)
+        if phrase and len(phrase.split()) >= 2
+    ]
+
+    scored: list[tuple[float, dict]] = []
+    n_docs = len(chunks)
+
+    for chunk, tokens in zip(chunks, tokenized_chunks):
+        tf = Counter(tokens)
+        score = 0.0
+        dl = max(len(tokens), 1)
+        text_lower = chunk["text"].lower()
+        locator_lower = (chunk.get("locator") or "").lower()
+
+        for term in query_terms:
+            freq = tf.get(term, 0)
+            if not freq:
+                continue
+            idf = math.log(1 + (n_docs - doc_freq[term] + 0.5) / (doc_freq[term] + 0.5))
+            denom = freq + k1 * (1 - b + b * dl / max(avgdl, 1))
+            score += idf * (freq * (k1 + 1)) / max(denom, 1e-9)
+
+            if term in locator_lower:
+                score += 0.8
+
+        for phrase in query_phrases:
+            if phrase in text_lower:
+                score += 2.5
+
+        if chunk.get("page") == 1:
+            score += 0.1
+
+        if score > 0:
+            scored.append((score, chunk))
+
+    if not scored:
+        scored = [(1.0 / (i + 1), chunk) for i, chunk in enumerate(chunks[:max_sources])]
+    else:
+        scored.sort(key=lambda item: item[0], reverse=True)
+
+    selected: list[dict] = []
+    seen_locators: set[str] = set()
+
+    for score, chunk in scored:
+        locator_key = f"{chunk.get('page')}-{chunk.get('section')}"
+        if locator_key in seen_locators and len(selected) < max_sources // 2:
+            continue
+        selected.append({**chunk, "score": score})
+        seen_locators.add(locator_key)
+        if len(selected) >= max_sources:
+            break
+
+    if len(selected) < max_sources:
+        seen_texts = {item["text"] for item in selected}
+        for score, chunk in scored:
+            if chunk["text"] in seen_texts:
+                continue
+            selected.append({**chunk, "score": score})
+            seen_texts.add(chunk["text"])
+            if len(selected) >= max_sources:
+                break
+
+    for idx, chunk in enumerate(selected, start=1):
+        chunk["source_id"] = f"S{idx}"
+
+    return selected
+
+
+def build_rag_system_prompt(paper: dict, question: str, sources: list[dict], source: str = "unknown") -> str:
+    ext     = paper.get("externalIds") or {}
+    authors = ", ".join(
+        a.get("name", "") for a in (paper.get("authors") or [])[:4]
+    ) or "Unknown"
+    doi = ext.get("DOI", "N/A")
+
+    sources_block = "\n\n".join(
+        f"[{src['source_id']}] {src.get('locator') or src.get('section') or 'Document'}\n{src['text']}"
+        for src in sources
+    ) or "[S1] No source text available."
+
+    return _RAG_SYSTEM_PROMPT.format(
+        title=paper.get("title", "Unknown"),
+        authors=authors,
+        year=paper.get("year", "N/A"),
+        doi=doi,
+        source=source,
+        question=question,
+        sources_block=sources_block[:18000],
+    )
+
+
+def build_sources_payload(sources: list[dict], answer_text: str = "") -> dict:
+    used_ids = sorted(set(re.findall(r"S\d+", answer_text or "")), key=lambda sid: int(sid[1:]))
+    payload = []
+    for src in sources:
+        excerpt = src["text"]
+        if len(excerpt) > 360:
+            excerpt = excerpt[:357].rstrip() + "..."
+        payload.append({
+            "id": src["source_id"],
+            "locator": src.get("locator") or src.get("section") or "Document",
+            "section": src.get("section"),
+            "page": src.get("page"),
+            "excerpt": excerpt,
+            "score": round(float(src.get("score", 0.0)), 3),
+        })
+
+    used = [src for src in payload if src["id"] in used_ids] or payload
+    return {"all": payload, "used": used, "used_ids": used_ids}
 
 
 # ── Chunk selection ────────────────────────────────────────────────────────────

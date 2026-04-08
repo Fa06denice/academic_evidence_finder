@@ -94,6 +94,7 @@ function dispatch(evt, h) {
     case 'analysis': h.onAnalysis?.(evt);      break
     case 'verdict':  h.onVerdict?.(evt.data);  break
     case 'review':   h.onReview?.(evt.data);   break
+    case 'sources':  h.onSources?.(evt.data);  break
     case 'token':    h.onToken?.(evt);         break
     case 'warning':  h.onWarning?.(evt);       break  // low relevance disclaimer
     case 'done':     h.onDone?.();             break

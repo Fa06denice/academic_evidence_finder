@@ -17,9 +17,10 @@ from cache_manager import CacheManager
 from paper_chat import (
     fetch_full_text,
     fetch_pdf_bytes,
-    extract_text_from_pdf,
-    select_relevant_chunks,
-    build_system_prompt,
+    build_rag_chunks,
+    build_rag_system_prompt,
+    build_sources_payload,
+    retrieve_relevant_sources,
 )
 
 logging.basicConfig(level=logging.INFO)
@@ -51,6 +52,7 @@ def _get_clients():
 scholar, analyzer, cache = _get_clients()
 
 _text_cache: dict[str, tuple[str, str]] = {}
+_rag_cache: dict[str, tuple[list[dict], str]] = {}
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────────
 def _cache_get_summary(pid: str) -> Optional[str]:
@@ -77,6 +79,17 @@ def _cache_set_summary(pid: str, summary: str):
 def _sse(event_type: str, data: dict) -> str:
     payload = json.dumps({"type": event_type, **data}, ensure_ascii=False)
     return f"data: {payload}\n\n"
+
+
+def _paper_cache_key(paper: dict) -> str:
+    ext = paper.get("externalIds") or {}
+    return (
+        paper.get("paperId")
+        or ext.get("DOI")
+        or ext.get("PubMed")
+        or paper.get("title")
+        or ""
+    ).strip().lower()
 
 def _fetch_papers(
     queries: list,
@@ -463,6 +476,7 @@ def paper_chat(req: ChatRequest):
             paper    = req.paper
             pid      = paper.get("paperId", "")
             question = req.question.strip()
+            cache_key = _paper_cache_key(paper)
 
             if pid and pid in _text_cache:
                 full_text, source = _text_cache[pid]
@@ -475,8 +489,25 @@ def paper_chat(req: ChatRequest):
                 full_text = paper.get("abstract") or ""
                 source    = "Abstract only (full text unavailable)"
 
-            content    = select_relevant_chunks(full_text, question) if full_text else "No content available."
-            sys_prompt = build_system_prompt(paper, content, source=source)
+            if cache_key and cache_key in _rag_cache:
+                rag_chunks, cached_source = _rag_cache[cache_key]
+                source = cached_source or source
+            else:
+                pdf_bytes = None
+                if "PDF" in source:
+                    try:
+                        pdf_bytes, _ = fetch_pdf_bytes(paper)
+                    except Exception:
+                        logger.warning("paper_chat could not refetch PDF bytes for %s", cache_key or pid)
+                rag_chunks = build_rag_chunks(full_text, source, pdf_bytes=pdf_bytes)
+                if cache_key and rag_chunks:
+                    _rag_cache[cache_key] = (rag_chunks, source)
+
+            selected_sources = []
+            if rag_chunks:
+                selected_sources = retrieve_relevant_sources(rag_chunks, question)
+
+            sys_prompt = build_rag_system_prompt(paper, question, selected_sources, source=source)
 
             messages = [{"role": "system", "content": sys_prompt}]
             for turn in req.history[-6:]:
@@ -493,10 +524,13 @@ def paper_chat(req: ChatRequest):
                 max_tokens=800,
                 stream=True,
             )
+            answer_text = ""
             for chunk in stream:
                 token = (chunk.choices[0].delta.content or "") if chunk.choices else ""
                 if token:
+                    answer_text += token
                     yield _sse("token", {"text": token})
+            yield _sse("sources", {"data": build_sources_payload(selected_sources, answer_text)})
             yield _sse("done", {})
 
         except Exception as exc:
@@ -512,4 +546,5 @@ def paper_chat(req: ChatRequest):
 def clear_cache():
     cache.clear()
     _text_cache.clear()
+    _rag_cache.clear()
     return {"status": "cleared"}
