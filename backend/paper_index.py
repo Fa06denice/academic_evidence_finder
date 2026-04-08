@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -143,6 +144,7 @@ def index_papers(papers: list[dict], cache_manager=None) -> int:
             "citation_count": int(paper.get("citationCount") or 0),
             "doi": str(ext.get("DOI") or ""),
             "abstract": str(paper.get("abstract") or "")[:4000],
+            "paper_json": json.dumps(paper, ensure_ascii=False, default=str),
         })
 
     if not ids:
@@ -185,6 +187,13 @@ def search_local_papers(
             continue
 
         paper = cache_manager.get_paper(paper_id) if cache_manager else None
+        if not isinstance(paper, dict):
+            raw_paper = metadata.get("paper_json")
+            if isinstance(raw_paper, str) and raw_paper:
+                try:
+                    paper = json.loads(raw_paper)
+                except json.JSONDecodeError:
+                    paper = None
         if not isinstance(paper, dict):
             paper = {
                 "paperId": paper_id,

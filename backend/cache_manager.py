@@ -7,6 +7,15 @@ from typing import Optional
 
 logger = logging.getLogger(__name__)
 
+
+def _default_cache_file() -> str:
+    explicit = os.getenv("CACHE_FILE", "").strip()
+    if explicit:
+        return explicit
+    if os.path.isdir("/data"):
+        return "/data/paper_cache.json"
+    return "paper_cache.json"
+
 class CacheManager:
     """
     Persistent JSON cache for search results and LLM analyses.
@@ -16,8 +25,8 @@ class CacheManager:
     with different year ranges never collide in the cache.
     """
 
-    def __init__(self, cache_file: str = "paper_cache.json"):
-        self.cache_file = cache_file
+    def __init__(self, cache_file: Optional[str] = None):
+        self.cache_file = cache_file or _default_cache_file()
         self.cache = self._load()
 
     def _load(self) -> dict:
@@ -32,6 +41,9 @@ class CacheManager:
 
     def _save(self):
         try:
+            parent = os.path.dirname(self.cache_file)
+            if parent:
+                os.makedirs(parent, exist_ok=True)
             with open(self.cache_file, "w", encoding="utf-8") as f:
                 json.dump(self.cache, f, indent=2, default=str, ensure_ascii=False)
         except (IOError, OSError) as exc:
