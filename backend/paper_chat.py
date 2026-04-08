@@ -1,15 +1,27 @@
 """paper_chat.py — PDF fetch, parse, HTML full-text, and chat logic."""
 import io
+import hashlib
 import logging
 import math
 import os
 import re
+import shutil
 from collections import Counter
 from typing import Optional
 
 import httpx
 import fitz  # PyMuPDF
 from bs4 import BeautifulSoup
+from openai import OpenAI
+
+try:
+    import chromadb
+    from chromadb.api.types import Documents, EmbeddingFunction, Embeddings
+except Exception:  # pragma: no cover - optional dependency at runtime
+    chromadb = None
+    Documents = list[str]
+    Embeddings = list[list[float]]
+    EmbeddingFunction = object
 
 logger = logging.getLogger(__name__)
 
@@ -23,6 +35,10 @@ _MAX_CHUNKS   = 6
 _TIMEOUT      = 15
 _RAG_CHUNK_WORDS   = 180
 _RAG_CHUNK_OVERLAP = 45
+_CHROMA_DIR = os.getenv("CHROMA_DIR", ".chroma")
+_EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
+_EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "https://api.openai.com/v1")
+_EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
 
 _STOPWORDS = {
     "a", "about", "after", "all", "also", "an", "and", "are", "as", "at", "be",
@@ -123,6 +139,19 @@ def _clean_html_text(soup: BeautifulSoup, selectors_to_remove: list[str] = None)
 
 def _normalize_ws(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+class OpenAICompatibleEmbeddingFunction(EmbeddingFunction):
+    def __init__(self, api_key: str, model: str, base_url: str):
+        self.client = OpenAI(api_key=api_key, base_url=base_url)
+        self.model = model
+
+    def __call__(self, input: Documents) -> Embeddings:
+        texts = [_normalize_ws(text) for text in input]
+        if not texts:
+            return []
+        resp = self.client.embeddings.create(model=self.model, input=texts)
+        return [item.embedding for item in resp.data]
 
 
 def _tokenize(text: str) -> list[str]:
@@ -522,11 +551,111 @@ def build_rag_chunks(full_text: str, source: str, pdf_bytes: Optional[bytes] = N
                 "chunk_index": idx,
             })
 
+    for idx, chunk in enumerate(chunks):
+        page = chunk.get("page") or 0
+        locator = chunk.get("locator") or chunk.get("section") or "document"
+        slug = re.sub(r"[^a-z0-9]+", "-", locator.lower()).strip("-")[:40] or "document"
+        chunk["chunk_id"] = f"chunk-{page}-{slug}-{idx}"
+
     return chunks
 
 
-def retrieve_relevant_sources(chunks: list[dict], question: str,
-                              max_sources: int = _MAX_CHUNKS) -> list[dict]:
+def chroma_vector_enabled() -> bool:
+    return bool(chromadb and _EMBEDDING_API_KEY and _EMBEDDING_MODEL)
+
+
+def _collection_name_for_paper(paper: dict) -> str:
+    ext = paper.get("externalIds") or {}
+    seed = (
+        paper.get("paperId")
+        or ext.get("DOI")
+        or ext.get("PubMed")
+        or paper.get("title")
+        or "paper"
+    )
+    digest = hashlib.md5(seed.encode("utf-8")).hexdigest()
+    return f"paper_{digest}"
+
+
+def _get_chroma_collection(paper: dict):
+    if not chroma_vector_enabled():
+        return None
+
+    client = chromadb.PersistentClient(path=_CHROMA_DIR)
+    embedding_function = OpenAICompatibleEmbeddingFunction(
+        api_key=_EMBEDDING_API_KEY,
+        model=_EMBEDDING_MODEL,
+        base_url=_EMBEDDING_BASE_URL,
+    )
+    return client.get_or_create_collection(
+        name=_collection_name_for_paper(paper),
+        embedding_function=embedding_function,
+        metadata={"hnsw:space": "cosine"},
+    )
+
+
+def index_chunks_in_chroma(paper: dict, chunks: list[dict]) -> bool:
+    collection = _get_chroma_collection(paper)
+    if collection is None or not chunks:
+        return False
+
+    if collection.count() > 0:
+        logger.info("Chroma collection already populated for %s (%d chunks)", collection.name, collection.count())
+        return True
+
+    ids = [chunk["chunk_id"] for chunk in chunks]
+    docs = [chunk["text"] for chunk in chunks]
+    metadatas = []
+    for chunk in chunks:
+        metadatas.append({
+            "chunk_id": chunk["chunk_id"],
+            "locator": str(chunk.get("locator") or ""),
+            "section": str(chunk.get("section") or ""),
+            "page": int(chunk["page"]) if chunk.get("page") else -1,
+            "word_start": int(chunk.get("word_start") or 0),
+            "word_end": int(chunk.get("word_end") or 0),
+        })
+
+    collection.add(ids=ids, documents=docs, metadatas=metadatas)
+    logger.info("Indexed %d chunks into Chroma collection %s", len(chunks), collection.name)
+    return True
+
+
+def query_chroma_sources(paper: dict, question: str, max_sources: int = _MAX_CHUNKS) -> list[dict]:
+    collection = _get_chroma_collection(paper)
+    if collection is None or collection.count() == 0:
+        return []
+
+    result = collection.query(
+        query_texts=[question],
+        n_results=max_sources,
+        include=["documents", "metadatas", "distances"],
+    )
+
+    docs = (result.get("documents") or [[]])[0]
+    metadatas = (result.get("metadatas") or [[]])[0]
+    distances = (result.get("distances") or [[]])[0]
+
+    selected: list[dict] = []
+    for idx, (doc, metadata, distance) in enumerate(zip(docs, metadatas, distances), start=1):
+        page = metadata.get("page", -1)
+        selected.append({
+            "chunk_id": metadata.get("chunk_id"),
+            "source_id": f"S{idx}",
+            "text": doc,
+            "locator": metadata.get("locator") or metadata.get("section") or "Document",
+            "section": metadata.get("section") or "Document",
+            "page": page if isinstance(page, int) and page > 0 else None,
+            "word_start": metadata.get("word_start", 0),
+            "word_end": metadata.get("word_end", 0),
+            "score": 1.0 - float(distance or 0.0),
+        })
+    logger.info("Chroma returned %d sources for question: %s", len(selected), question[:120])
+    return selected
+
+
+def _retrieve_relevant_sources_lexical(chunks: list[dict], question: str,
+                                       max_sources: int = _MAX_CHUNKS) -> list[dict]:
     if not chunks:
         return []
 
@@ -619,6 +748,43 @@ def retrieve_relevant_sources(chunks: list[dict], question: str,
     return selected
 
 
+def retrieve_relevant_sources(chunks: list[dict], question: str,
+                              max_sources: int = _MAX_CHUNKS,
+                              paper: Optional[dict] = None) -> list[dict]:
+    lexical_sources = _retrieve_relevant_sources_lexical(chunks, question, max_sources=max_sources)
+
+    if not paper or not chroma_vector_enabled():
+        return lexical_sources
+
+    try:
+        index_chunks_in_chroma(paper, chunks)
+        vector_sources = query_chroma_sources(paper, question, max_sources=max_sources)
+    except Exception as exc:
+        logger.warning("Chroma retrieval failed, falling back to lexical retrieval: %s", exc)
+        return lexical_sources
+
+    if not vector_sources:
+        return lexical_sources
+
+    merged: list[dict] = []
+    seen_ids: set[str] = set()
+
+    for source in vector_sources + lexical_sources:
+        chunk_id = source.get("chunk_id")
+        if chunk_id and chunk_id in seen_ids:
+            continue
+        if chunk_id:
+            seen_ids.add(chunk_id)
+        merged.append(dict(source))
+        if len(merged) >= max_sources:
+            break
+
+    for idx, source in enumerate(merged, start=1):
+        source["source_id"] = f"S{idx}"
+
+    return merged
+
+
 def build_rag_system_prompt(paper: dict, question: str, sources: list[dict], source: str = "unknown") -> str:
     ext     = paper.get("externalIds") or {}
     authors = ", ".join(
@@ -660,6 +826,12 @@ def build_sources_payload(sources: list[dict], answer_text: str = "") -> dict:
 
     used = [src for src in payload if src["id"] in used_ids] or payload
     return {"all": payload, "used": used, "used_ids": used_ids}
+
+
+def clear_chroma_store():
+    if chromadb and os.path.isdir(_CHROMA_DIR):
+        shutil.rmtree(_CHROMA_DIR, ignore_errors=True)
+        logger.info("Cleared Chroma store at %s", _CHROMA_DIR)
 
 
 # ── Chunk selection ────────────────────────────────────────────────────────────

@@ -20,6 +20,7 @@ from paper_chat import (
     build_rag_chunks,
     build_rag_system_prompt,
     build_sources_payload,
+    clear_chroma_store,
     retrieve_relevant_sources,
 )
 
@@ -505,7 +506,7 @@ def paper_chat(req: ChatRequest):
 
             selected_sources = []
             if rag_chunks:
-                selected_sources = retrieve_relevant_sources(rag_chunks, question)
+                selected_sources = retrieve_relevant_sources(rag_chunks, question, paper=paper)
 
             sys_prompt = build_rag_system_prompt(paper, question, selected_sources, source=source)
 
@@ -547,4 +548,5 @@ def clear_cache():
     cache.clear()
     _text_cache.clear()
     _rag_cache.clear()
+    clear_chroma_store()
     return {"status": "cleared"}
