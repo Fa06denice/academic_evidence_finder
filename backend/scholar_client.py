@@ -23,6 +23,7 @@ class SemanticScholarClient:
     def __init__(self, api_key: Optional[str] = None):
         self._last_call = 0.0
         self._session   = requests.Session()
+        self.last_error: Optional[str] = None
         self._session.headers.update({"User-Agent": "AcademicEvidenceFinder/1.0"})
         if api_key:
             self._session.headers.update({"x-api-key": api_key})
@@ -35,6 +36,7 @@ class SemanticScholarClient:
 
     def _get(self, path: str, params: dict, retries: int = 3) -> dict:
         self._throttle()
+        self.last_error = None
         try:
             r = self._session.get(f"{self.BASE}/{path}", params=params, timeout=20)
             if r.status_code == 429:
@@ -42,12 +44,14 @@ class SemanticScholarClient:
                     logger.warning("429 — waiting %.1fs", self.RETRY_WAIT)
                     time.sleep(self.RETRY_WAIT)
                     return self._get(path, params, retries - 1)
-                return {"data": [], "error": "Rate limited"}
+                self.last_error = "Semantic Scholar rate limited the request. Add a valid API key or retry later."
+                return {"data": [], "error": self.last_error}
             r.raise_for_status()
             return r.json()
         except requests.exceptions.RequestException as exc:
             logger.error("API error [%s]: %s", path, exc)
-            return {"data": [], "error": str(exc)}
+            self.last_error = str(exc)
+            return {"data": [], "error": self.last_error}
 
     def search(
         self,

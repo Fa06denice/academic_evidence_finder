@@ -120,22 +120,26 @@ def _fetch_papers(
     max_papers: int,
     year: Optional[str],
     exclude_ids: Optional[set] = None,
-) -> list:
+) -> tuple[list, Optional[str]]:
     per_query = max(max_papers, 15)
     seen      = set(exclude_ids or [])
     papers    = []
+    search_errors: list[str] = []
     for q in queries:
         cached = cache.get_search(q, year)
         batch  = cached if cached else scholar.search(q, limit=per_query, year=year or None)
         if not cached and batch:
             cache.set_search(q, batch, year)
+        if not cached and not batch and getattr(scholar, "last_error", None):
+            search_errors.append(scholar.last_error)
         for p in batch:
             pid = p.get("paperId", "")
             if pid and pid not in seen:
                 seen.add(pid)
                 papers.append(p)
     papers = sorted(papers, key=lambda p: p.get("citationCount") or 0, reverse=True)
-    return papers[:max_papers]
+    error = search_errors[0] if search_errors and not papers else None
+    return papers[:max_papers], error
 
 
 _RETRY_SUFFIXES = [
@@ -210,6 +214,7 @@ def verify_claim(req: ClaimRequest):
 
             yield _sse("progress", {"message": "Searching literature…", "step": 2, "total": 4})
             papers = None
+            search_error = None
             for update in _run_with_heartbeat(
                 _fetch_papers,
                 base_queries,
@@ -222,10 +227,10 @@ def verify_claim(req: ClaimRequest):
                 if update["kind"] == "heartbeat":
                     yield _sse("progress", update["value"])
                 else:
-                    papers = update["value"]
+                    papers, search_error = update["value"]
 
             if not papers:
-                yield _sse("error", {"message": "No papers found. Try rephrasing."})
+                yield _sse("error", {"message": search_error or "No papers found. Try rephrasing."})
                 yield _sse("done", {})
                 return
 
@@ -276,13 +281,15 @@ def verify_claim(req: ClaimRequest):
                     "step": 3, "total": 4,
                 })
 
-                extra_papers = _fetch_papers(
+                extra_papers, extra_error = _fetch_papers(
                     _enrich_queries(base_queries, retry_round - 1),
                     missing,           # fetch only what is still needed
                     req.year_filter,
                     exclude_ids=seen_ids,
                 )
                 if not extra_papers:
+                    if extra_error:
+                        yield _sse("warning", {"message": extra_error})
                     break
 
                 # Freeze index base + total BEFORE the loop so they stay stable
@@ -378,6 +385,7 @@ def literature_review(req: TopicRequest):
 
             yield _sse("progress", {"message": "Searching literature…", "step": 2, "total": 3})
             papers = None
+            search_error = None
             for update in _run_with_heartbeat(
                 _fetch_papers,
                 base_queries,
@@ -390,10 +398,10 @@ def literature_review(req: TopicRequest):
                 if update["kind"] == "heartbeat":
                     yield _sse("progress", update["value"])
                 else:
-                    papers = update["value"]
+                    papers, search_error = update["value"]
 
             if not papers:
-                yield _sse("error", {"message": "No papers found. Try rephrasing."})
+                yield _sse("error", {"message": search_error or "No papers found. Try rephrasing."})
                 yield _sse("done", {})
                 return
 
@@ -439,13 +447,15 @@ def literature_review(req: TopicRequest):
                     "message": f"Only {len(relevant)} relevant papers — searching deeper…",
                     "step": 2, "total": 3,
                 })
-                extra_papers = _fetch_papers(
+                extra_papers, extra_error = _fetch_papers(
                     _enrich_queries(base_queries, retry_round - 1),
                     missing,
                     req.year_filter,
                     exclude_ids=seen_ids,
                 )
                 if not extra_papers:
+                    if extra_error:
+                        yield _sse("warning", {"message": extra_error})
                     break
 
                 retry_base  = len(all_results)
@@ -564,6 +574,7 @@ def search_papers(req: TopicRequest):
                     queries = update["value"]
             yield _sse("progress", {"message": "Searching…"})
             papers = None
+            search_error = None
             for update in _run_with_heartbeat(
                 _fetch_papers,
                 queries,
@@ -574,9 +585,9 @@ def search_papers(req: TopicRequest):
                 if update["kind"] == "heartbeat":
                     yield _sse("progress", update["value"])
                 else:
-                    papers = update["value"]
+                    papers, search_error = update["value"]
             if not papers:
-                yield _sse("error", {"message": "No papers found. Try rephrasing."})
+                yield _sse("error", {"message": search_error or "No papers found. Try rephrasing."})
                 yield _sse("done", {})
                 return
             yield _sse("papers", {"data": papers})
