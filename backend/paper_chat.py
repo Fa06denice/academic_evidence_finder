@@ -35,6 +35,7 @@ _MAX_CHUNKS   = 6
 _TIMEOUT      = 15
 _RAG_CHUNK_WORDS   = 180
 _RAG_CHUNK_OVERLAP = 45
+_DISPLAY_BLOCK_WORDS = 140
 _CHROMA_DIR = os.getenv("CHROMA_DIR", ".chroma")
 _EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
 _EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "https://api.openai.com/v1")
@@ -139,6 +140,11 @@ def _clean_html_text(soup: BeautifulSoup, selectors_to_remove: list[str] = None)
 
 def _normalize_ws(text: str) -> str:
     return re.sub(r"\s+", " ", (text or "")).strip()
+
+
+def _slugify(text: str, fallback: str = "document") -> str:
+    slug = re.sub(r"[^a-z0-9]+", "-", (text or "").lower()).strip("-")
+    return slug[:40] or fallback
 
 
 class OpenAICompatibleEmbeddingFunction(EmbeddingFunction):
@@ -479,6 +485,20 @@ def _split_word_windows(text: str,
     return windows
 
 
+def _split_display_blocks(text: str, block_words: int = _DISPLAY_BLOCK_WORDS) -> list[tuple[str, int, int]]:
+    words = text.split()
+    if not words:
+        return []
+
+    blocks: list[tuple[str, int, int]] = []
+    for start in range(0, len(words), block_words):
+        end = min(len(words), start + block_words)
+        block = " ".join(words[start:end]).strip()
+        if block:
+            blocks.append((block, start, end))
+    return blocks
+
+
 def _split_text_sections(text: str, source: str) -> list[dict]:
     lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
     if not lines:
@@ -510,8 +530,75 @@ def _split_text_sections(text: str, source: str) -> list[dict]:
     return [section for section in sections if section["text"]]
 
 
+def _build_blocks_for_text(text: str, section: str, locator: str, page: Optional[int]) -> list[dict]:
+    normalized = _normalize_ws(text)
+    if not normalized:
+        return []
+
+    slug = _slugify(locator or section or "document")
+    blocks: list[dict] = []
+    for idx, (block_text, word_start, word_end) in enumerate(_split_display_blocks(normalized)):
+        blocks.append({
+            "anchor_id": f"anchor-{page or 0}-{slug}-{idx}",
+            "section": section or locator or "Document",
+            "locator": locator or section or "Document",
+            "page": page,
+            "word_start": word_start,
+            "word_end": word_end,
+            "text": block_text,
+        })
+    return blocks
+
+
+def build_text_blocks(full_text: str, source: str, pdf_bytes: Optional[bytes] = None) -> list[dict]:
+    blocks: list[dict] = []
+
+    if pdf_bytes:
+        for page in extract_text_pages_from_pdf(pdf_bytes):
+            blocks.extend(_build_blocks_for_text(
+                page["text"],
+                section=page["section"],
+                locator=f"Page {page['page']}",
+                page=page["page"],
+            ))
+    else:
+        for section in _split_text_sections(full_text, source):
+            blocks.extend(_build_blocks_for_text(
+                section["text"],
+                section=section["section"],
+                locator=section["section"],
+                page=None,
+            ))
+
+    if not blocks and full_text.strip():
+        default_section = "Abstract" if "abstract" in source.lower() else "Document"
+        blocks.extend(_build_blocks_for_text(
+            full_text,
+            section=default_section,
+            locator=default_section,
+            page=None,
+        ))
+
+    return blocks
+
+
+def _anchor_for_chunk(blocks: list[dict], section: str, page: Optional[int], word_start: int) -> Optional[str]:
+    for block in blocks:
+        if block.get("section") != section:
+            continue
+        if block.get("page") != page:
+            continue
+        if block["word_start"] <= word_start < block["word_end"]:
+            return block["anchor_id"]
+    for block in blocks:
+        if block.get("section") == section and block.get("page") == page:
+            return block["anchor_id"]
+    return None
+
+
 def build_rag_chunks(full_text: str, source: str, pdf_bytes: Optional[bytes] = None) -> list[dict]:
     chunks: list[dict] = []
+    text_blocks = build_text_blocks(full_text, source, pdf_bytes=pdf_bytes)
 
     if pdf_bytes:
         for page in extract_text_pages_from_pdf(pdf_bytes):
@@ -524,10 +611,12 @@ def build_rag_chunks(full_text: str, source: str, pdf_bytes: Optional[bytes] = N
                     "text": chunk_text,
                     "locator": f"Page {page['page']}",
                     "chunk_index": idx,
+                    "anchor_id": _anchor_for_chunk(text_blocks, page["section"], page["page"], word_start),
                 })
     else:
         for section in _split_text_sections(full_text, source):
-            for idx, (chunk_text, word_start, word_end) in enumerate(_split_word_windows(section["text"])):
+            normalized = _normalize_ws(section["text"])
+            for idx, (chunk_text, word_start, word_end) in enumerate(_split_word_windows(normalized)):
                 chunks.append({
                     "section": section["section"],
                     "page": None,
@@ -536,6 +625,7 @@ def build_rag_chunks(full_text: str, source: str, pdf_bytes: Optional[bytes] = N
                     "text": chunk_text,
                     "locator": section["section"],
                     "chunk_index": idx,
+                    "anchor_id": _anchor_for_chunk(text_blocks, section["section"], None, word_start),
                 })
 
     if not chunks and full_text.strip():
@@ -549,6 +639,12 @@ def build_rag_chunks(full_text: str, source: str, pdf_bytes: Optional[bytes] = N
                 "text": chunk_text,
                 "locator": "Abstract" if "abstract" in source.lower() else "Document",
                 "chunk_index": idx,
+                "anchor_id": _anchor_for_chunk(
+                    text_blocks,
+                    "Abstract" if "abstract" in source.lower() else "Document",
+                    None,
+                    word_start,
+                ),
             })
 
     for idx, chunk in enumerate(chunks):
@@ -609,6 +705,7 @@ def index_chunks_in_chroma(paper: dict, chunks: list[dict]) -> bool:
     for chunk in chunks:
         metadatas.append({
             "chunk_id": chunk["chunk_id"],
+            "anchor_id": str(chunk.get("anchor_id") or ""),
             "locator": str(chunk.get("locator") or ""),
             "section": str(chunk.get("section") or ""),
             "page": int(chunk["page"]) if chunk.get("page") else -1,
@@ -643,6 +740,7 @@ def query_chroma_sources(paper: dict, question: str, max_sources: int = _MAX_CHU
             "chunk_id": metadata.get("chunk_id"),
             "source_id": f"S{idx}",
             "text": doc,
+            "anchor_id": metadata.get("anchor_id") or None,
             "locator": metadata.get("locator") or metadata.get("section") or "Document",
             "section": metadata.get("section") or "Document",
             "page": page if isinstance(page, int) and page > 0 else None,
@@ -820,6 +918,7 @@ def build_sources_payload(sources: list[dict], answer_text: str = "") -> dict:
             "locator": src.get("locator") or src.get("section") or "Document",
             "section": src.get("section"),
             "page": src.get("page"),
+            "anchor_id": src.get("anchor_id"),
             "excerpt": excerpt,
             "score": round(float(src.get("score", 0.0)), 3),
         })

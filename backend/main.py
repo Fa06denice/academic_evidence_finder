@@ -17,6 +17,7 @@ from cache_manager import CacheManager
 from paper_chat import (
     fetch_full_text,
     fetch_pdf_bytes,
+    build_text_blocks,
     build_rag_chunks,
     build_rag_system_prompt,
     build_sources_payload,
@@ -53,6 +54,7 @@ def _get_clients():
 scholar, analyzer, cache = _get_clients()
 
 _text_cache: dict[str, tuple[str, str]] = {}
+_text_blocks_cache: dict[str, tuple[list[dict], str]] = {}
 _rag_cache: dict[str, tuple[list[dict], str]] = {}
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────────
@@ -621,14 +623,17 @@ async def summarize_paper(req: SummarizeRequest):
 async def fetch_paper(req: FetchPaperRequest):
     paper = req.paper
     pid   = paper.get("paperId", "")
+    cache_key = _paper_cache_key(paper)
 
     if pid and pid in _text_cache:
         text, source = _text_cache[pid]
+        text_blocks = _text_blocks_cache.get(cache_key or pid, ([], source))[0]
         return {
             "available": source != "unavailable",
             "source":    source,
             "pdf_b64":   None,
             "text_preview": text[:500],
+            "text_blocks": text_blocks,
             "pid": pid,
         }
 
@@ -637,6 +642,7 @@ async def fetch_paper(req: FetchPaperRequest):
         _text_cache[pid] = (text, source)
 
     pdf_b64 = None
+    pdf_bytes = None
     if "PDF" in source:
         try:
             pdf_bytes, _ = fetch_pdf_bytes(paper)
@@ -645,11 +651,16 @@ async def fetch_paper(req: FetchPaperRequest):
         except Exception:
             pass
 
+    text_blocks = build_text_blocks(text, source, pdf_bytes=pdf_bytes) if text else []
+    if (cache_key or pid) and text_blocks:
+        _text_blocks_cache[cache_key or pid] = (text_blocks, source)
+
     return {
         "available": bool(text) and source != "unavailable",
         "source":    source,
         "pdf_b64":   pdf_b64,
         "text_preview": text[:500] if text else "",
+        "text_blocks": text_blocks,
         "pid": pid,
     }
 
@@ -728,6 +739,7 @@ def paper_chat(req: ChatRequest):
 def clear_cache():
     cache.clear()
     _text_cache.clear()
+    _text_blocks_cache.clear()
     _rag_cache.clear()
     clear_chroma_store()
     return {"status": "cleared"}
