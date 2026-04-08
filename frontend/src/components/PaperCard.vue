@@ -80,6 +80,14 @@
           </svg>
           {{ copied ? 'Copied!' : 'Cite' }}
         </button>
+        <button v-if="enableChat" @click="openChat"
+          class="btn-ghost text-xs flex items-center gap-1.5">
+          <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M8 10h8M8 14h5m-7 6 2.4-2H19a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v10a2 2 0 0 0 2 2h1z"/>
+          </svg>
+          Chat
+        </button>
         <a v-if="paperUrl" :href="paperUrl" target="_blank" rel="noopener"
           class="btn-ghost text-xs flex items-center gap-1.5">
           <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
@@ -118,13 +126,16 @@
 
 <script setup>
 import { ref, computed } from 'vue'
+import { useRouter } from 'vue-router'
 import { summarizePaper } from '../api/index.js'
 
 const props = defineProps({
   paper:    { type: Object, required: true },
   analysis: { type: Object, required: true },
+  enableChat: { type: Boolean, default: false },
 })
 
+const router         = useRouter()
 const open           = ref(false)
 const copied         = ref(false)
 const summary        = ref('')
@@ -179,6 +190,10 @@ async function doSummarize() {
   try { summary.value = await summarizePaper(props.paper) }
   catch (e) { summary.value = 'Error: ' + e.message }
   finally { loadingSummary.value = false }
+}
+
+function openChat() {
+  router.push({ name: 'chat', state: { paper: JSON.stringify(props.paper) } })
 }
 
 function copyCitation() {

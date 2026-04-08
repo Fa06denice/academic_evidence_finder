@@ -13,14 +13,7 @@
         @keydown.enter.prevent="submit"
       />
       <div class="flex items-center gap-4 mt-4">
-        <label class="text-xs text-muted">Papers:
-          <select v-model.number="maxPapers" :disabled="loading"
-            class="ml-2 bg-surface2 border border-border rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none disabled:opacity-50">
-            <option :value="10">10</option>
-            <option :value="15">15</option>
-            <option :value="20">20</option>
-          </select>
-        </label>
+        <PaperCountPicker v-model="maxPapers" label="Papers" :disabled="loading" />
         <button type="button" @click="submit" :disabled="loading || !topic.trim()"
           class="ml-auto px-5 py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-all flex items-center gap-2">
           <span v-if="loading" class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
@@ -91,6 +84,7 @@ import { useRoute } from 'vue-router'
 import { streamPost } from '../api/index.js'
 import { historyStore } from '../stores/history.js'
 import PaperCard from '../components/PaperCard.vue'
+import PaperCountPicker from '../components/PaperCountPicker.vue'
 
 const route       = useRoute()
 const topic       = ref('')

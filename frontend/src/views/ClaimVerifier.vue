@@ -14,15 +14,7 @@
         @keydown.ctrl.enter="submit" @keydown.meta.enter="submit"
       ></textarea>
       <div class="flex items-center gap-4 mt-4">
-        <div class="flex items-center gap-2">
-          <span class="text-xs text-muted">Papers:</span>
-          <select v-model="depth" :disabled="loading"
-            class="bg-surface2 border border-border rounded-lg px-3 py-1.5 text-sm text-white focus:outline-none focus:border-accent/50 disabled:opacity-50">
-            <option value="5">5 · Fast</option>
-            <option value="10">10 · Balanced</option>
-            <option value="15">15 · Deep</option>
-          </select>
-        </div>
+        <PaperCountPicker v-model="depth" label="Papers" :disabled="loading" />
         <button @click="submit" :disabled="loading || !claim.trim()"
           class="ml-auto flex items-center gap-2 px-5 py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-40 disabled:cursor-not-allowed text-white text-sm font-medium rounded-xl transition-all duration-150">
           <span v-if="loading" class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
@@ -117,7 +109,7 @@
           />
         </label>
         <div class="flex-1 min-w-0">
-          <PaperCard :paper="item.paper" :analysis="item.analysis" />
+          <PaperCard :paper="item.paper" :analysis="item.analysis" :enable-chat="true" />
         </div>
       </div>
     </div>
@@ -164,10 +156,11 @@ import { useRoute } from 'vue-router'
 import { post, streamPost } from '../api/index.js'
 import { historyStore } from '../stores/history.js'
 import PaperCard from '../components/PaperCard.vue'
+import PaperCountPicker from '../components/PaperCountPicker.vue'
 
 const route        = useRoute()
 const claim        = ref('')
-const depth        = ref('10')
+const depth        = ref(10)
 const loading      = ref(false)
 const progressMsg  = ref('Starting…')
 const progressPct  = ref(0)
@@ -263,7 +256,7 @@ async function submit() {
   loading.value     = true
   progressMsg.value = 'Searching literature…'
 
-  await streamPost('/api/verify', { claim: claim.value, max_papers: +depth.value }, {
+  await streamPost('/api/verify', { claim: claim.value, max_papers: depth.value }, {
     onProgress(e) {
       progressMsg.value = e.message
       if (e.step && e.total) progressPct.value = Math.round((e.step / e.total) * 85)
