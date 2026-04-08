@@ -117,7 +117,6 @@ const cacheError    = ref(false)
 
 const nav = [
   { to: '/',       icon: '🧪', label: 'Claim Verifier'    },
-  { to: '/review', icon: '📚', label: 'Literature Review' },
   { to: '/search', icon: '🔍', label: 'Paper Search'      },
   { to: '/chat',   icon: '💬', label: 'Paper Chat'        },
 ]
@@ -128,7 +127,7 @@ function typeIcon(type) {
 
 function reuseHistory(item) {
   router.push({
-    path:  item.path,
+    path:  item.path === '/review' ? '/' : item.path,
     query: { q: item.query, autorun: '1' },
   })
 }

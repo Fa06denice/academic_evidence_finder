@@ -66,7 +66,7 @@
                 </div>
               </div>
               <div class="mt-3 p-3 rounded-lg bg-accent/5 border border-accent/20 text-xs text-muted leading-relaxed">
-                <strong class="text-accent">Combo recommandé :</strong> Lance d'abord <em>Claim Verifier</em> pour avoir une vue d'ensemble, puis utilise <em>Paper Chat</em> sur les papers marqués CONTRADICTS pour approfondir leur contexte et conditions.
+                <strong class="text-accent">Combo recommandé :</strong> Lance d'abord <em>Claim Verifier</em>, génère si besoin une literature review depuis les papers retenus, puis utilise <em>Paper Chat</em> sur les papers les plus intéressants pour approfondir leur contexte.
               </div>
             </section>
 
@@ -129,12 +129,7 @@ const features = [
   {
     icon: '🧪',
     name: 'Claim Verifier',
-    desc: "Entre une affirmation scientifique. L'outil cherche des papers, les analyse et rend un verdict global basé uniquement sur les papers pertinents (score ≥ 4)."
-  },
-  {
-    icon: '📚',
-    name: 'Literature Review',
-    desc: "Entre un sujet ou topic. Génère une synthèse structurée de la littérature récente sous forme de revue académique."
+    desc: "Entre une affirmation scientifique. L'outil cherche des papers, les analyse, rend un verdict global et peut ensuite générer une literature review à partir des papers sélectionnés."
   },
   {
     icon: '🔍',
