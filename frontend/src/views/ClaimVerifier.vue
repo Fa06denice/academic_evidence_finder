@@ -92,8 +92,56 @@
           </button>
         </div>
       </div>
-      <PaperCard v-for="item in filtered" :key="item.paper.paperId"
-        :paper="item.paper" :analysis="item.analysis" />
+      <div class="mb-4 rounded-xl border border-border bg-surface p-4">
+        <div class="flex flex-wrap items-center gap-2">
+          <span class="text-xs text-muted">{{ selectedCount }} selected</span>
+          <button @click="selectAllResults" class="btn-sm">Select all</button>
+          <button @click="clearSelection" class="btn-sm">Clear</button>
+          <button @click="generateSelectedReview"
+            :disabled="loading || reviewLoading || !selectedCount"
+            class="btn-sm ml-auto disabled:opacity-40 disabled:cursor-not-allowed">
+            {{ reviewLoading ? 'Generating review…' : `Generate review from ${selectedCount} paper${selectedCount > 1 ? 's' : ''}` }}
+          </button>
+        </div>
+        <p class="mt-2 text-xs text-muted">
+          The review uses the current claim as topic and reuses the analyses already computed for the selected papers.
+        </p>
+      </div>
+      <div v-for="item in filtered" :key="item.paper.paperId" class="flex items-start gap-3">
+        <label class="mt-4 shrink-0">
+          <input
+            type="checkbox"
+            :checked="isSelected(item.paper.paperId)"
+            @change="toggleSelection(item.paper.paperId)"
+            class="h-4 w-4 rounded border-border bg-surface2 text-accent focus:ring-accent/40"
+          />
+        </label>
+        <div class="flex-1 min-w-0">
+          <PaperCard :paper="item.paper" :analysis="item.analysis" />
+        </div>
+      </div>
+    </div>
+
+    <div v-if="reviewError" class="mt-5 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+      {{ reviewError }}
+    </div>
+
+    <div v-if="selectedReviewText && !loading" class="mt-6 fade-up">
+      <div class="mb-4 flex items-center gap-2">
+        <h2 class="text-sm font-semibold text-white">Literature Review from Selected Papers</h2>
+        <span class="text-xs text-muted">Claim: {{ claim }}</span>
+      </div>
+      <div class="rounded-2xl border border-border bg-surface p-6">
+        <div class="prose prose-invert prose-sm max-w-none">
+          <div v-if="selectedReviewSections.length">
+            <div v-for="(section, index) in selectedReviewSections" :key="index" class="mb-6">
+              <h3 class="mb-2 text-base font-semibold text-white">{{ section.title }}</h3>
+              <p class="whitespace-pre-wrap text-sm leading-relaxed text-muted">{{ section.content }}</p>
+            </div>
+          </div>
+          <pre v-else class="font-sans whitespace-pre-wrap text-sm leading-relaxed text-muted">{{ selectedReviewText }}</pre>
+        </div>
+      </div>
     </div>
 
     <!-- Loading skeletons -->
@@ -113,7 +161,7 @@
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
 import { useRoute } from 'vue-router'
-import { streamPost } from '../api/index.js'
+import { post, streamPost } from '../api/index.js'
 import { historyStore } from '../stores/history.js'
 import PaperCard from '../components/PaperCard.vue'
 
@@ -128,6 +176,10 @@ const warningMsg   = ref('')
 const results      = ref([])   // { paper, analysis }[]
 const activeFilter = ref('ALL')
 const copiedAll    = ref(false)
+const selectedPaperIds = ref([])
+const reviewLoading = ref(false)
+const reviewError = ref('')
+const selectedReviewRaw = ref(null)
 
 const filters = [
   { val: 'ALL',         label: 'All' },
@@ -139,6 +191,33 @@ const filters = [
 const filtered = computed(() => {
   if (activeFilter.value === 'ALL') return results.value
   return results.value.filter(r => r.analysis.verdict === activeFilter.value)
+})
+
+const selectedCount = computed(() => selectedPaperIds.value.length)
+const selectedResults = computed(() =>
+  results.value.filter(item => selectedPaperIds.value.includes(item.paper.paperId))
+)
+const selectedReviewText = computed(() => {
+  if (!selectedReviewRaw.value) return ''
+  if (typeof selectedReviewRaw.value === 'string') return selectedReviewRaw.value
+  const keys = ['introduction', 'background', 'methodology', 'findings', 'gaps', 'conclusion', 'discussion']
+  return keys
+    .filter(key => selectedReviewRaw.value[key])
+    .map(key => `## ${key.charAt(0).toUpperCase() + key.slice(1)}\n\n${selectedReviewRaw.value[key]}`)
+    .join('\n\n')
+})
+const selectedReviewSections = computed(() => {
+  const text = selectedReviewText.value
+  if (!text) return []
+  return text.split(/\n(?=##\s)/)
+    .map(part => {
+      const lines = part.trim().split('\n')
+      return {
+        title: lines[0].replace(/^#+\s*/, '').trim(),
+        content: lines.slice(1).join('\n').trim(),
+      }
+    })
+    .filter(section => section.title && section.content)
 })
 
 const VERDICT_STYLES = {
@@ -159,6 +238,10 @@ function clearLocalState() {
   progressPct.value  = 0
   progressMsg.value  = 'Starting…'
   activeFilter.value = 'ALL'
+  selectedPaperIds.value = []
+  reviewLoading.value = false
+  reviewError.value = ''
+  selectedReviewRaw.value = null
 }
 
 onMounted(() => {
@@ -198,7 +281,12 @@ async function submit() {
       if (paper && e.analysis) {
         // Avoid duplicates (cache hit may re-emit same paperId)
         const already = results.value.some(r => r.paper.paperId === paper.paperId)
-        if (!already) results.value.push({ paper, analysis: e.analysis })
+        if (!already) {
+          results.value.push({ paper, analysis: e.analysis })
+          if (!selectedPaperIds.value.includes(paper.paperId)) {
+            selectedPaperIds.value.push(paper.paperId)
+          }
+        }
       }
     },
     onVerdict(v) { verdict.value = v },
@@ -210,6 +298,46 @@ async function submit() {
     },
     onError(e) { progressMsg.value = '⚠ ' + e.message; loading.value = false },
   })
+}
+
+function isSelected(paperId) {
+  return selectedPaperIds.value.includes(paperId)
+}
+
+function toggleSelection(paperId) {
+  if (isSelected(paperId)) {
+    selectedPaperIds.value = selectedPaperIds.value.filter(id => id !== paperId)
+    return
+  }
+  selectedPaperIds.value = [...selectedPaperIds.value, paperId]
+}
+
+function selectAllResults() {
+  selectedPaperIds.value = results.value.map(item => item.paper.paperId)
+}
+
+function clearSelection() {
+  selectedPaperIds.value = []
+}
+
+async function generateSelectedReview() {
+  if (!claim.value.trim() || reviewLoading.value || !selectedResults.value.length) return
+
+  reviewLoading.value = true
+  reviewError.value = ''
+  selectedReviewRaw.value = null
+
+  try {
+    const response = await post('/api/verify/review', {
+      claim: claim.value,
+      items: selectedResults.value,
+    })
+    selectedReviewRaw.value = response.review
+  } catch (err) {
+    reviewError.value = err.message
+  } finally {
+    reviewLoading.value = false
+  }
 }
 
 function exportBibtex() {

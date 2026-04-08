@@ -122,6 +122,10 @@ class TopicRequest(BaseModel):
     max_papers: int = 7
     year_filter: Optional[str] = None
 
+class ClaimReviewRequest(BaseModel):
+    claim: str
+    items: list = []
+
 class SummarizeRequest(BaseModel):
     paper: dict
 
@@ -345,6 +349,35 @@ def literature_review(req: TopicRequest):
 
     return StreamingResponse(generate(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.post("/api/verify/review")
+async def review_from_claim_results(req: ClaimReviewRequest):
+    try:
+        selected_results: list[tuple[dict, dict]] = []
+        for item in req.items:
+            if not isinstance(item, dict):
+                continue
+            paper = item.get("paper")
+            analysis = item.get("analysis")
+            if isinstance(paper, dict) and isinstance(analysis, dict):
+                selected_results.append((paper, analysis))
+
+        if not selected_results:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "Select at least one analysed paper to generate a literature review."},
+            )
+
+        review = analyzer.literature_review(req.claim, selected_results)
+        return {"review": review}
+
+    except Exception as exc:
+        logger.exception("review_from_claim_results error")
+        return JSONResponse(
+            status_code=500,
+            content={"error": f"Literature review generation failed: {exc}"},
+        )
 
 
 @app.post("/api/search")
