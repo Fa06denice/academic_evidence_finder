@@ -118,6 +118,12 @@
       {{ reviewError }}
     </div>
 
+    <div v-if="errorMsg && !loading" class="mb-6 fade-up">
+      <div class="rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-400">
+        {{ errorMsg }}
+      </div>
+    </div>
+
     <div v-if="selectedReviewText && !loading" class="mt-6 fade-up">
       <div class="mb-4 flex items-center gap-2">
         <h2 class="text-sm font-semibold text-white">Literature Review from Selected Papers</h2>
@@ -172,6 +178,7 @@ const copiedAll    = ref(false)
 const selectedPaperIds = ref([])
 const reviewLoading = ref(false)
 const reviewError = ref('')
+const errorMsg = ref('')
 const selectedReviewRaw = ref(null)
 
 const filters = [
@@ -234,6 +241,7 @@ function clearLocalState() {
   selectedPaperIds.value = []
   reviewLoading.value = false
   reviewError.value = ''
+  errorMsg.value = ''
   selectedReviewRaw.value = null
 }
 
@@ -289,7 +297,11 @@ async function submit() {
       loading.value     = false
       historyStore.add({ type: 'verify', query: claim.value, path: '/' })
     },
-    onError(e) { progressMsg.value = '⚠ ' + e.message; loading.value = false },
+    onError(e) {
+      errorMsg.value = e.message || 'An unexpected error occurred.'
+      progressMsg.value = '⚠ ' + errorMsg.value
+      loading.value = false
+    },
   })
 }
 
