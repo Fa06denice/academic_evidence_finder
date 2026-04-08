@@ -452,7 +452,12 @@ def extract_text_pages_from_pdf(pdf_bytes: bytes) -> list[dict]:
     try:
         doc = fitz.open(stream=io.BytesIO(pdf_bytes), filetype="pdf")
         for page_idx, page in enumerate(doc, start=1):
-            text = _normalize_ws(page.get_text())
+            text_blocks = []
+            for block in sorted(page.get_text("blocks"), key=lambda item: (item[1], item[0])):
+                block_text = _normalize_ws(block[4] if len(block) > 4 else "")
+                if block_text:
+                    text_blocks.append(block_text)
+            text = "\n\n".join(text_blocks) if text_blocks else _normalize_ws(page.get_text())
             if text:
                 pages.append({
                     "page": page_idx,
@@ -485,23 +490,135 @@ def _split_word_windows(text: str,
     return windows
 
 
-def _split_display_blocks(text: str, block_words: int = _DISPLAY_BLOCK_WORDS) -> list[tuple[str, int, int]]:
-    words = text.split()
-    if not words:
+def _split_sentences(text: str) -> list[str]:
+    cleaned = _normalize_ws(text)
+    if not cleaned:
+        return []
+    sentences = re.split(r"(?<=[.!?])\s+(?=(?:[A-Z0-9\"'(]))", cleaned)
+    return [sentence.strip() for sentence in sentences if sentence.strip()]
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    raw = (text or "").replace("\r\n", "\n")
+    paragraphs = [part.strip() for part in re.split(r"\n\s*\n+", raw) if part.strip()]
+    if len(paragraphs) > 1:
+        return paragraphs
+
+    lines = [line.strip() for line in raw.splitlines() if line.strip()]
+    if lines:
+        return lines
+
+    cleaned = _normalize_ws(raw)
+    return [cleaned] if cleaned else []
+
+
+def _split_long_paragraph(text: str, max_words: int) -> list[str]:
+    sentences = _split_sentences(text)
+    if len(sentences) <= 1:
+        return [chunk for chunk, _, _ in _split_word_windows(text, chunk_words=max_words, overlap_words=max(20, max_words // 4))]
+
+    groups: list[str] = []
+    current: list[str] = []
+    current_words = 0
+
+    for sentence in sentences:
+        sentence_words = len(sentence.split())
+        if sentence_words > max_words:
+            if current:
+                groups.append(" ".join(current).strip())
+                current = []
+                current_words = 0
+            groups.extend(
+                chunk for chunk, _, _ in _split_word_windows(
+                    sentence,
+                    chunk_words=max_words,
+                    overlap_words=max(20, max_words // 4),
+                )
+            )
+            continue
+
+        if current and current_words + sentence_words > max_words:
+            groups.append(" ".join(current).strip())
+            current = [sentence]
+            current_words = sentence_words
+            continue
+
+        current.append(sentence)
+        current_words += sentence_words
+
+    if current:
+        groups.append(" ".join(current).strip())
+
+    return [group for group in groups if group]
+
+
+def _semantic_units(text: str, max_words: int) -> list[dict]:
+    units: list[dict] = []
+    offset = 0
+
+    for paragraph in _split_paragraphs(text):
+        cleaned = _normalize_ws(paragraph)
+        if not cleaned:
+            continue
+
+        parts = [cleaned] if len(cleaned.split()) <= max_words else _split_long_paragraph(cleaned, max_words)
+        for part in parts:
+            word_count = len(part.split())
+            if not word_count:
+                continue
+            units.append({
+                "text": part,
+                "word_start": offset,
+                "word_end": offset + word_count,
+            })
+            offset += word_count
+
+    return units
+
+
+def _merge_units(units: list[dict], target_words: int, overlap_units: int = 0) -> list[tuple[str, int, int]]:
+    if not units:
         return []
 
-    blocks: list[tuple[str, int, int]] = []
-    for start in range(0, len(words), block_words):
-        end = min(len(words), start + block_words)
-        block = " ".join(words[start:end]).strip()
-        if block:
-            blocks.append((block, start, end))
-    return blocks
+    merged: list[tuple[str, int, int]] = []
+    start_idx = 0
+
+    while start_idx < len(units):
+        end_idx = start_idx
+        total_words = 0
+        chunk_units: list[dict] = []
+
+        while end_idx < len(units):
+            unit = units[end_idx]
+            unit_words = unit["word_end"] - unit["word_start"]
+            if chunk_units and total_words + unit_words > target_words:
+                break
+            chunk_units.append(unit)
+            total_words += unit_words
+            end_idx += 1
+
+        if not chunk_units:
+            unit = units[start_idx]
+            chunk_units = [unit]
+            end_idx = start_idx + 1
+
+        merged.append((
+            "\n\n".join(unit["text"] for unit in chunk_units),
+            chunk_units[0]["word_start"],
+            chunk_units[-1]["word_end"],
+        ))
+
+        if end_idx >= len(units):
+            break
+
+        start_idx = max(start_idx + 1, end_idx - overlap_units)
+
+    return merged
 
 
 def _split_text_sections(text: str, source: str) -> list[dict]:
-    lines = [line.strip() for line in (text or "").splitlines() if line.strip()]
-    if not lines:
+    raw_lines = (text or "").splitlines()
+    if not raw_lines:
         return []
 
     default_section = "Abstract" if "abstract" in source.lower() else "Document"
@@ -509,17 +626,22 @@ def _split_text_sections(text: str, source: str) -> list[dict]:
     current_title = default_section
     current_lines: list[str] = []
 
-    for line in lines:
-        if _is_heading(line):
+    for line in raw_lines:
+        stripped = line.strip()
+        if _is_heading(stripped):
             if current_lines:
                 sections.append({
                     "section": current_title,
                     "text": "\n".join(current_lines).strip(),
                 })
                 current_lines = []
-            current_title = line.strip(": ")
-        else:
-            current_lines.append(line)
+            current_title = stripped.strip(": ")
+            continue
+        if not stripped:
+            if current_lines and current_lines[-1] != "":
+                current_lines.append("")
+            continue
+        current_lines.append(stripped)
 
     if current_lines:
         sections.append({
@@ -531,13 +653,13 @@ def _split_text_sections(text: str, source: str) -> list[dict]:
 
 
 def _build_blocks_for_text(text: str, section: str, locator: str, page: Optional[int]) -> list[dict]:
-    normalized = _normalize_ws(text)
-    if not normalized:
+    units = _semantic_units(text, max_words=_DISPLAY_BLOCK_WORDS)
+    if not units:
         return []
 
     slug = _slugify(locator or section or "document")
     blocks: list[dict] = []
-    for idx, (block_text, word_start, word_end) in enumerate(_split_display_blocks(normalized)):
+    for idx, (block_text, word_start, word_end) in enumerate(_merge_units(units, target_words=_DISPLAY_BLOCK_WORDS, overlap_units=0)):
         blocks.append({
             "anchor_id": f"anchor-{page or 0}-{slug}-{idx}",
             "section": section or locator or "Document",
@@ -602,7 +724,9 @@ def build_rag_chunks(full_text: str, source: str, pdf_bytes: Optional[bytes] = N
 
     if pdf_bytes:
         for page in extract_text_pages_from_pdf(pdf_bytes):
-            for idx, (chunk_text, word_start, word_end) in enumerate(_split_word_windows(page["text"])):
+            units = _semantic_units(page["text"], max_words=_RAG_CHUNK_WORDS)
+            windows = _merge_units(units, target_words=_RAG_CHUNK_WORDS, overlap_units=1)
+            for idx, (chunk_text, word_start, word_end) in enumerate(windows):
                 chunks.append({
                     "section": page["section"],
                     "page": page["page"],
@@ -615,8 +739,9 @@ def build_rag_chunks(full_text: str, source: str, pdf_bytes: Optional[bytes] = N
                 })
     else:
         for section in _split_text_sections(full_text, source):
-            normalized = _normalize_ws(section["text"])
-            for idx, (chunk_text, word_start, word_end) in enumerate(_split_word_windows(normalized)):
+            units = _semantic_units(section["text"], max_words=_RAG_CHUNK_WORDS)
+            windows = _merge_units(units, target_words=_RAG_CHUNK_WORDS, overlap_units=1)
+            for idx, (chunk_text, word_start, word_end) in enumerate(windows):
                 chunks.append({
                     "section": section["section"],
                     "page": None,
@@ -629,8 +754,9 @@ def build_rag_chunks(full_text: str, source: str, pdf_bytes: Optional[bytes] = N
                 })
 
     if not chunks and full_text.strip():
-        fallback = _normalize_ws(full_text)
-        for idx, (chunk_text, word_start, word_end) in enumerate(_split_word_windows(fallback)):
+        units = _semantic_units(full_text, max_words=_RAG_CHUNK_WORDS)
+        windows = _merge_units(units, target_words=_RAG_CHUNK_WORDS, overlap_units=1)
+        for idx, (chunk_text, word_start, word_end) in enumerate(windows):
             chunks.append({
                 "section": "Abstract" if "abstract" in source.lower() else "Document",
                 "page": None,
