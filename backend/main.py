@@ -16,6 +16,7 @@ from scholar_client import SemanticScholarClient
 from cache_manager import CacheManager
 from paper_index import backfill_paper_index, index_papers, paper_index_stats, search_local_papers
 from paper_chat import (
+    chroma_debug_info,
     fetch_full_text,
     fetch_pdf_bytes,
     build_text_blocks,
@@ -209,7 +210,13 @@ class ChatRequest(BaseModel):
 @app.get("/api/health")
 def health():
     stats = cache.stats()
-    return {"status": "ok", "model": analyzer.current_model, "cache": stats, "paper_index": paper_index_stats()}
+    return {
+        "status": "ok",
+        "model": analyzer.current_model,
+        "cache": stats,
+        "paper_index": paper_index_stats(),
+        "chroma": chroma_debug_info(),
+    }
 
 
 @app.post("/api/verify")

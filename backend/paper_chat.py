@@ -1059,6 +1059,14 @@ def clear_chroma_store():
         logger.info("Cleared Chroma store at %s", _CHROMA_DIR)
 
 
+def chroma_debug_info() -> dict:
+    return {
+        "enabled": chroma_vector_enabled(),
+        "dir": _CHROMA_DIR,
+        "dir_exists": os.path.isdir(_CHROMA_DIR),
+    }
+
+
 # ── Chunk selection ────────────────────────────────────────────────────────────
 
 def _split_chunks(text: str, size: int = _CHUNK_SIZE) -> list[str]:
