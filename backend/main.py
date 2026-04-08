@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from analyzer import PaperAnalyzer
 from scholar_client import SemanticScholarClient
 from cache_manager import CacheManager
+from paper_index import backfill_paper_index, index_papers, paper_index_stats, search_local_papers
 from paper_chat import (
     fetch_full_text,
     fetch_pdf_bytes,
@@ -49,6 +50,7 @@ def _get_clients():
     scholar   = SemanticScholarClient(api_key=ss_key or None)
     analyzer  = PaperAnalyzer(api_key=api_key, provider=provider, extra_keys=extra)
     cache     = CacheManager()
+    backfill_paper_index(cache)
     return scholar, analyzer, cache
 
 scholar, analyzer, cache = _get_clients()
@@ -127,9 +129,31 @@ def _fetch_papers(
     seen      = set(exclude_ids or [])
     papers    = []
     search_errors: list[str] = []
+
+    for q in queries:
+        local_batch = search_local_papers(
+            q,
+            limit=per_query,
+            year_filter=year,
+            exclude_ids=seen,
+            cache_manager=cache,
+        )
+        for p in local_batch:
+            pid = p.get("paperId", "")
+            if pid and pid not in seen:
+                seen.add(pid)
+                papers.append(p)
+
+    if len(papers) >= max_papers:
+        papers = sorted(papers, key=lambda p: p.get("citationCount") or 0, reverse=True)
+        logger.info("Serving %d paper(s) from local index without Semantic Scholar fallback", len(papers[:max_papers]))
+        return papers[:max_papers], None
+
     for q in queries:
         cached = cache.get_search(q, year)
         batch  = cached if cached else scholar.search(q, limit=per_query, year=year or None)
+        if batch:
+            index_papers(batch, cache_manager=cache)
         if not cached and batch:
             cache.set_search(q, batch, year)
         if not cached and not batch and getattr(scholar, "last_error", None):
@@ -185,7 +209,7 @@ class ChatRequest(BaseModel):
 @app.get("/api/health")
 def health():
     stats = cache.stats()
-    return {"status": "ok", "model": analyzer.current_model, "cache": stats}
+    return {"status": "ok", "model": analyzer.current_model, "cache": stats, "paper_index": paper_index_stats()}
 
 
 @app.post("/api/verify")
@@ -624,6 +648,7 @@ async def fetch_paper(req: FetchPaperRequest):
     paper = req.paper
     pid   = paper.get("paperId", "")
     cache_key = _paper_cache_key(paper)
+    index_papers([paper], cache_manager=cache)
 
     if pid and pid in _text_cache:
         text, source = _text_cache[pid]
