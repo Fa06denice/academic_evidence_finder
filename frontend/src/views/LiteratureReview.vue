@@ -155,7 +155,15 @@ async function submit() {
   clearLocalState()
   loading.value = true
 
-  const rawPaperBuf = []
+  const defaultAnalysis = {
+    verdict: 'NEUTRAL',
+    confidence: 'LOW',
+    relevance_score: 0,
+    evidence: '',
+    explanation: '',
+    key_finding: 'N/A',
+  }
+  const papersById = new Map()
 
   await streamPost('/api/review', { topic: topic.value, max_papers: maxPapers.value }, {
     onProgress(e) {
@@ -164,7 +172,25 @@ async function submit() {
     },
     onPapers(payload) {
       const arr = Array.isArray(payload) ? payload : (payload?.papers || [])
-      arr.forEach(item => rawPaperBuf.push(item))
+      progressMsg.value = `Analysing ${arr.length} papers…`
+      progressPct.value = 15
+      arr.forEach(paper => {
+        if (!paper?.paperId || papersById.has(paper.paperId)) return
+        papersById.set(paper.paperId, { paper, analysis: defaultAnalysis })
+      })
+    },
+    onAnalysis(e) {
+      progressMsg.value = `Paper ${(e.index ?? 0) + 1} / ${e.total}`
+      progressPct.value = 15 + Math.round(((e.index + 1) / e.total) * 75)
+
+      const paper = e.paper
+      if (!paper?.paperId) return
+
+      const current = papersById.get(paper.paperId)
+      papersById.set(paper.paperId, {
+        paper,
+        analysis: e.analysis || current?.analysis || defaultAnalysis,
+      })
     },
     onReview(r) {
       reviewRaw.value = r
@@ -174,10 +200,7 @@ async function submit() {
       progressPct.value = 100
       loading.value = false
       historyStore.add({ type: 'review', query: topic.value, path: '/review' })
-      papers.value = rawPaperBuf.map(item => {
-        if (item && item.paper) return item
-        return { paper: item, analysis: { verdict: 'NEUTRAL', confidence: 'LOW', relevance_score: 0, evidence: '', explanation: '', key_finding: 'N/A' } }
-      }).filter(item => item.paper && item.paper.paperId)
+      papers.value = Array.from(papersById.values()).filter(item => item.paper && item.paper.paperId)
     },
   })
 }
