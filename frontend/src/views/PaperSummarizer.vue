@@ -81,12 +81,14 @@
 </template>
 
 <script setup>
-import { ref, reactive } from 'vue'
-import { useRouter } from 'vue-router'
+import { ref, reactive, watch, onMounted, onUnmounted } from 'vue'
+import { useRouter, useRoute } from 'vue-router'
 import { streamPost, summarizePaper } from '../api/index.js'
+import { historyStore } from '../stores/history.js'
 import PaperCountPicker from '../components/PaperCountPicker.vue'
 
 const router     = useRouter()
+const route      = useRoute()
 const query      = ref('')
 const maxPapers  = ref(10)
 const exactTitle = ref(false)
@@ -97,6 +99,36 @@ const lastQuery  = ref('')
 const error      = ref('')
 const summaries      = reactive({})
 const summaryLoading = reactive({})
+
+watch(
+  () => route.query,
+  (routeQuery) => {
+    const nextQuery = typeof routeQuery.q === 'string' ? routeQuery.q : ''
+    if (!nextQuery) return
+
+    query.value = nextQuery
+
+    const parsedMax = Number.parseInt(routeQuery.maxPapers, 10)
+    if (Number.isFinite(parsedMax) && parsedMax >= 3 && parsedMax <= 20) {
+      maxPapers.value = parsedMax
+    }
+
+    exactTitle.value = routeQuery.exactTitle === '1'
+
+    if (routeQuery.autorun === '1' && !loading.value) {
+      submit()
+    }
+  },
+  { immediate: true }
+)
+
+onMounted(() => {
+  window.addEventListener('aef:reuse-history', handleHistoryReplay)
+})
+
+onUnmounted(() => {
+  window.removeEventListener('aef:reuse-history', handleHistoryReplay)
+})
 
 async function submit() {
   if (!query.value.trim() || loading.value) return
@@ -113,7 +145,20 @@ async function submit() {
     onProgress(e) { progress.value = e.message },
     onPapers(p)   { papers.value = p },
     onError(e)    { error.value = e.message },
-    onDone()      { loading.value = false },
+    onDone() {
+      loading.value = false
+      historyStore.add({
+        type: 'search',
+        query: query.value,
+        path: '/search',
+        routeQuery: {
+          q: query.value,
+          autorun: '1',
+          maxPapers: String(maxPapers.value),
+          exactTitle: exactTitle.value ? '1' : '0',
+        },
+      })
+    },
   })
 }
 
@@ -129,5 +174,22 @@ async function toggleSummary(paper) {
 // Passe le paper complet dans le state du router — pas d'ID à connaître
 function openChat(paper) {
   router.push({ name: 'chat', state: { paper: JSON.stringify(paper) } })
+}
+
+function handleHistoryReplay(event) {
+  const item = event?.detail
+  if (!item || item.path !== '/search' || loading.value) return
+
+  const routeQuery = item.routeQuery || {}
+  const nextQuery = typeof routeQuery.q === 'string' ? routeQuery.q : item.query
+  if (!nextQuery) return
+
+  query.value = nextQuery
+  const parsedMax = Number.parseInt(routeQuery.maxPapers, 10)
+  if (Number.isFinite(parsedMax) && parsedMax >= 3 && parsedMax <= 20) {
+    maxPapers.value = parsedMax
+  }
+  exactTitle.value = routeQuery.exactTitle === '1'
+  submit()
 }
 </script>

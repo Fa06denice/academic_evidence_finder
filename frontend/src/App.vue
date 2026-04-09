@@ -125,11 +125,26 @@ function typeIcon(type) {
   return type === 'verify' ? '🧪' : type === 'review' ? '📚' : type === 'chat' ? '💬' : '🔍'
 }
 
+function normalizedQuery(query = {}) {
+  return JSON.stringify(
+    Object.fromEntries(
+      Object.entries(query)
+        .filter(([, value]) => value !== undefined && value !== null && value !== '')
+        .sort(([a], [b]) => a.localeCompare(b))
+    )
+  )
+}
+
 function reuseHistory(item) {
-  router.push({
-    path:  item.path === '/review' ? '/' : item.path,
-    query: { q: item.query, autorun: '1' },
-  })
+  const path = item.path === '/review' ? '/' : item.path
+  const query = { ...(item.routeQuery || { q: item.query, autorun: '1' }) }
+
+  if (route.path === path && normalizedQuery(route.query) === normalizedQuery(query)) {
+    window.dispatchEvent(new CustomEvent('aef:reuse-history', { detail: item }))
+    return
+  }
+
+  router.push({ path, query, state: item.routeState || undefined })
 }
 
 /**

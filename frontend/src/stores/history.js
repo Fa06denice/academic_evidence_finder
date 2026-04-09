@@ -12,13 +12,22 @@ function save(items) {
   catch {}
 }
 
+function normalizedEntryKey(entry) {
+  return JSON.stringify({
+    type: entry.type || '',
+    path: entry.path || '',
+    query: entry.query || '',
+    routeQuery: entry.routeQuery || {},
+  })
+}
+
 export const historyStore = reactive({
   items: load(),
 
   add(entry) {
-    // Deduplicate: remove existing entry with same query + type
+    const entryKey = normalizedEntryKey(entry)
     this.items = this.items.filter(
-      i => !(i.query === entry.query && i.type === entry.type)
+      i => normalizedEntryKey(i) !== entryKey
     )
     this.items.unshift({ ...entry, id: Date.now(), date: new Date().toISOString() })
     if (this.items.length > MAX) this.items = this.items.slice(0, MAX)

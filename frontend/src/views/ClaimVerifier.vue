@@ -176,7 +176,7 @@
 </template>
 
 <script setup>
-import { ref, computed, onMounted, onUnmounted } from 'vue'
+import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
 import { post, streamPost } from '../api/index.js'
 import { historyStore } from '../stores/history.js'
@@ -268,16 +268,33 @@ function clearLocalState() {
 
 onMounted(() => {
   window.addEventListener('aef:clear-cache', clearLocalState)
-  const q = route.query.q
-  if (q) {
-    claim.value = q
-    if (route.query.autorun === '1') submit()
-  }
+  window.addEventListener('aef:reuse-history', handleHistoryReplay)
 })
 
 onUnmounted(() => {
   window.removeEventListener('aef:clear-cache', clearLocalState)
+  window.removeEventListener('aef:reuse-history', handleHistoryReplay)
 })
+
+watch(
+  () => route.query,
+  (query) => {
+    const nextClaim = typeof query.q === 'string' ? query.q : ''
+    if (!nextClaim) return
+
+    claim.value = nextClaim
+
+    const parsedDepth = Number.parseInt(query.maxPapers, 10)
+    if (Number.isFinite(parsedDepth) && parsedDepth >= 3 && parsedDepth <= 20) {
+      depth.value = parsedDepth
+    }
+
+    if (query.autorun === '1' && !loading.value) {
+      submit()
+    }
+  },
+  { immediate: true }
+)
 
 async function submit() {
   if (!claim.value.trim() || loading.value) return
@@ -316,7 +333,16 @@ async function submit() {
     onDone() {
       progressPct.value = 100
       loading.value     = false
-      historyStore.add({ type: 'verify', query: claim.value, path: '/' })
+      historyStore.add({
+        type: 'verify',
+        query: claim.value,
+        path: '/',
+        routeQuery: {
+          q: claim.value,
+          autorun: '1',
+          maxPapers: String(depth.value),
+        },
+      })
     },
     onError(e) {
       errorMsg.value = e.message || 'An unexpected error occurred.'
@@ -324,6 +350,22 @@ async function submit() {
       loading.value = false
     },
   })
+}
+
+function handleHistoryReplay(event) {
+  const item = event?.detail
+  if (!item || item.path !== '/') return
+
+  const routeQuery = item.routeQuery || {}
+  const nextClaim = typeof routeQuery.q === 'string' ? routeQuery.q : item.query
+  if (!nextClaim || loading.value) return
+
+  claim.value = nextClaim
+  const parsedDepth = Number.parseInt(routeQuery.maxPapers, 10)
+  if (Number.isFinite(parsedDepth) && parsedDepth >= 3 && parsedDepth <= 20) {
+    depth.value = parsedDepth
+  }
+  submit()
 }
 
 function isSelected(paperId) {
