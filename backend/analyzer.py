@@ -304,6 +304,43 @@ RULES:
 - If the abstract is short, extract the maximum supported information from it.
 """
 
+_PAPER_PROFILE = """\
+You are creating a document-level reading guide for a single academic paper.
+
+Use ONLY the paper content below. Do not use outside knowledge. Do not invent results.
+
+PAPER:
+Title: {title}
+Authors: {authors}
+Year: {year}
+Content source: {source}
+
+QUESTION CONTEXT:
+This profile will later help answer broad conceptual questions such as:
+- what is the paper about
+- what are the main findings
+- what is the overall conclusion
+- what are the key limitations
+
+PAPER CONTENT:
+{content}
+
+Return ONLY a raw JSON object with these keys:
+- "overview": 2-3 sentences on what the paper studies and why
+- "main_findings": array of 2 to 4 concise findings grounded in the paper
+- "methods_snapshot": 1-2 sentences on design, sample, or analytic approach
+- "limitations": array of 1 to 4 concise limitations; use an empty array if none are explicit
+- "section_notes": array of objects with:
+  - "section": short section label
+  - "note": one sentence summary of what that section contributes
+
+RULES:
+- Stay faithful to the text.
+- If a point is only weakly implied, phrase it cautiously.
+- Prefer findings and conclusions over background details.
+- Keep all fields concise and useful for later grounded Q&A.
+"""
+
 _TOPIC_QUERIES = """\
 You are a senior academic librarian specialized in systematic literature search.
 
@@ -582,6 +619,31 @@ class PaperAnalyzer:
             "assessment": str(d.get("assessment") or ""),
         }
 
+    def _norm_paper_profile(self, d: dict) -> dict:
+        def _clean_lines(value) -> list[str]:
+            if not isinstance(value, list):
+                return []
+            return [str(item).strip() for item in value if str(item).strip()]
+
+        section_notes = []
+        raw_notes = d.get("section_notes")
+        if isinstance(raw_notes, list):
+            for note in raw_notes[:8]:
+                if not isinstance(note, dict):
+                    continue
+                section = str(note.get("section") or "").strip()
+                summary = str(note.get("note") or "").strip()
+                if section and summary:
+                    section_notes.append({"section": section, "note": summary})
+
+        return {
+            "overview": str(d.get("overview") or "").strip(),
+            "main_findings": _clean_lines(d.get("main_findings")),
+            "methods_snapshot": str(d.get("methods_snapshot") or "").strip(),
+            "limitations": _clean_lines(d.get("limitations")),
+            "section_notes": section_notes,
+        }
+
     # ── public API ────────────────────────────────────────────────────────────
 
     def transform_query(self, user_input: str, topic_mode: bool = False, max_papers: int = 7) -> List[str]:
@@ -752,3 +814,36 @@ class PaperAnalyzer:
             )
         except Exception as exc:
             return "Summarization failed: " + str(exc)
+
+    def paper_profile(self, paper: dict, document_context: str, source: str) -> dict:
+        context = (document_context or "").strip()
+        if not context:
+            return self._norm_paper_profile({
+                "overview": "",
+                "main_findings": [],
+                "methods_snapshot": "",
+                "limitations": [],
+                "section_notes": [],
+            })
+
+        fallback = self._norm_paper_profile({
+            "overview": (paper.get("abstract") or "")[:500],
+            "main_findings": [],
+            "methods_snapshot": "",
+            "limitations": [],
+            "section_notes": [],
+        })
+
+        prompt = _PAPER_PROFILE.format(
+            title=paper.get("title", "Unknown"),
+            authors=_author_str(paper, max_authors=5),
+            year=paper.get("year", "N/A"),
+            source=source,
+            content=context[:45000],
+        )
+        try:
+            raw = self._llm(prompt, temperature=0.1, max_tokens=1200)
+            return self._norm_paper_profile(self._parse(raw, fallback))
+        except Exception as exc:
+            logger.warning("Paper profile generation failed: %s", exc)
+            return fallback

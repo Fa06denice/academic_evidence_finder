@@ -18,10 +18,12 @@ from cache_manager import CacheManager
 from paper_index import backfill_paper_index, index_papers, paper_index_stats, search_local_papers
 from paper_chat import (
     chroma_debug_info,
+    classify_question_intent,
     fetch_full_text,
     fetch_pdf_bytes,
     build_text_blocks,
     build_rag_chunks,
+    build_document_profile_context,
     build_rag_system_prompt,
     build_sources_payload,
     clear_chroma_store,
@@ -60,6 +62,7 @@ scholar, analyzer, cache = _get_clients()
 _text_cache: dict[str, tuple[str, str]] = {}
 _text_blocks_cache: dict[str, tuple[list[dict], str]] = {}
 _rag_cache: dict[str, tuple[list[dict], str]] = {}
+_paper_profile_cache: dict[str, dict] = {}
 
 # ── Cache helpers ─────────────────────────────────────────────────────────────────
 def _cache_get_summary(pid: str) -> Optional[str]:
@@ -78,6 +81,28 @@ def _cache_set_summary(pid: str, summary: str):
         else:
             from datetime import datetime
             cache.cache[f"summary_{pid}"] = {"data": summary, "ts": datetime.now().isoformat()}
+            cache._save()
+    except Exception:
+        pass
+
+
+def _cache_get_paper_profile(paper_key: str) -> Optional[dict]:
+    try:
+        if hasattr(cache, "get_paper_profile"):
+            return cache.get_paper_profile(paper_key)
+        return cache.cache.get("paper_profiles", {}).get(paper_key)
+    except Exception:
+        return None
+
+
+def _cache_set_paper_profile(paper_key: str, profile: dict):
+    try:
+        if hasattr(cache, "set_paper_profile"):
+            cache.set_paper_profile(paper_key, profile)
+        else:
+            if "paper_profiles" not in cache.cache:
+                cache.cache["paper_profiles"] = {}
+            cache.cache["paper_profiles"][paper_key] = profile
             cache._save()
     except Exception:
         pass
@@ -738,6 +763,7 @@ def paper_chat(req: ChatRequest):
             pid      = paper.get("paperId", "")
             question = req.question.strip()
             cache_key = _paper_cache_key(paper)
+            strategy = classify_question_intent(question)
 
             if pid and pid in _text_cache:
                 full_text, source = _text_cache[pid]
@@ -750,25 +776,65 @@ def paper_chat(req: ChatRequest):
                 full_text = paper.get("abstract") or ""
                 source    = "Abstract only (full text unavailable)"
 
+            pdf_bytes = None
+            if "PDF" in source:
+                try:
+                    pdf_bytes, _ = fetch_pdf_bytes(paper)
+                except Exception:
+                    logger.warning("paper_chat could not refetch PDF bytes for %s", cache_key or pid)
+
+            if cache_key and cache_key in _text_blocks_cache:
+                text_blocks, cached_source = _text_blocks_cache[cache_key]
+                source = cached_source or source
+            else:
+                text_blocks = build_text_blocks(full_text, source, pdf_bytes=pdf_bytes) if full_text else []
+                if cache_key and text_blocks:
+                    _text_blocks_cache[cache_key] = (text_blocks, source)
+
             if cache_key and cache_key in _rag_cache:
                 rag_chunks, cached_source = _rag_cache[cache_key]
                 source = cached_source or source
             else:
-                pdf_bytes = None
-                if "PDF" in source:
-                    try:
-                        pdf_bytes, _ = fetch_pdf_bytes(paper)
-                    except Exception:
-                        logger.warning("paper_chat could not refetch PDF bytes for %s", cache_key or pid)
                 rag_chunks = build_rag_chunks(full_text, source, pdf_bytes=pdf_bytes)
                 if cache_key and rag_chunks:
                     _rag_cache[cache_key] = (rag_chunks, source)
 
+            document_profile = None
+            profile_key = cache_key or pid
+            if strategy in {"general", "hybrid"} and profile_key:
+                if profile_key in _paper_profile_cache:
+                    document_profile = _paper_profile_cache[profile_key]
+                else:
+                    cached_profile = _cache_get_paper_profile(profile_key)
+                    if cached_profile:
+                        document_profile = cached_profile
+                        _paper_profile_cache[profile_key] = cached_profile
+                    else:
+                        profile_context = build_document_profile_context(text_blocks, source)
+                        if profile_context:
+                            document_profile = analyzer.paper_profile(paper, profile_context, source)
+                            if document_profile:
+                                _paper_profile_cache[profile_key] = document_profile
+                                _cache_set_paper_profile(profile_key, document_profile)
+
             selected_sources = []
             if rag_chunks:
-                selected_sources = retrieve_relevant_sources(rag_chunks, question, paper=paper)
+                source_limit = 8 if strategy in {"general", "hybrid"} else 6
+                selected_sources = retrieve_relevant_sources(
+                    rag_chunks,
+                    question,
+                    paper=paper,
+                    max_sources=source_limit,
+                )
 
-            sys_prompt = build_rag_system_prompt(paper, question, selected_sources, source=source)
+            sys_prompt = build_rag_system_prompt(
+                paper,
+                question,
+                selected_sources,
+                source=source,
+                document_profile=document_profile,
+                strategy=strategy,
+            )
 
             messages = [{"role": "system", "content": sys_prompt}]
             for turn in req.history[-6:]:
@@ -806,5 +872,6 @@ def clear_cache():
     _text_cache.clear()
     _text_blocks_cache.clear()
     _rag_cache.clear()
+    _paper_profile_cache.clear()
     clear_chroma_store()
     return {"status": "cleared"}

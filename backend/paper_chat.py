@@ -36,6 +36,8 @@ _TIMEOUT      = 15
 _RAG_CHUNK_WORDS   = 180
 _RAG_CHUNK_OVERLAP = 45
 _DISPLAY_BLOCK_WORDS = 140
+_PROFILE_CONTEXT_BLOCKS = 18
+_PROFILE_CONTEXT_CHARS = 45000
 _CHROMA_DIR = os.getenv("CHROMA_DIR", ".chroma")
 _EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
 _EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "https://api.openai.com/v1")
@@ -86,8 +88,12 @@ PAPER CONTENT:
 _RAG_SYSTEM_PROMPT = """\
 You are a precise academic paper assistant.
 
-You must answer ONLY from the retrieved source passages below.
-Each passage comes from the same paper and has a source ID such as [S1], [S2], etc.
+You are answering about ONE paper using:
+- a document-level overview synthesized from the paper itself
+- retrieved source passages from the same paper
+
+CHAT STRATEGY:
+{strategy_label}
 
 PAPER:
 Title:   {title}
@@ -99,19 +105,23 @@ Content source: {source}
 QUESTION:
 {question}
 
+DOCUMENT-LEVEL OVERVIEW:
+{document_overview_block}
+
 RETRIEVED SOURCES:
 {sources_block}
 
 STRICT RULES:
-1. Answer ONLY using the retrieved sources above.
-2. Every factual claim must cite at least one source ID immediately after it, e.g. [S1] or [S1, S2].
-3. Never cite a source ID that was not provided.
-4. If no single passage directly answers the question, synthesize the answer from multiple retrieved passages and cite each claim.
-5. Distinguish direct statements from careful synthesis. Do not invent conclusions not supported by the retrieved sources.
-6. Only say that the evidence is insufficient when the retrieved sources genuinely do not support a reasonable grounded answer.
-7. If the paper content available is only an abstract, mention that once and stay within that limit.
-8. Prefer direct, compact answers. Lead with the answer, then the evidence.
-9. When quoting, quote verbatim and keep the citation right after the quote.
+1. Answer ONLY from the paper content represented by the overview and retrieved sources above.
+2. Never use outside knowledge about the paper.
+3. For specific factual claims, cite at least one source ID immediately after the claim, e.g. [S1] or [S1, S2].
+4. For broad conceptual questions, you may use the document-level overview to synthesize the overall message of the paper, but you must stay faithful to the paper and support the key points with the closest relevant source IDs whenever possible.
+5. Never cite a source ID that was not provided.
+6. If no single passage directly answers the question, synthesize carefully from multiple passages instead of refusing too quickly.
+7. Only say that the evidence is insufficient when both the overview and retrieved sources genuinely fail to support a grounded answer.
+8. If the paper content available is only an abstract, mention that once and stay within that limitation.
+9. Prefer direct, compact answers. Lead with the answer, then the evidence.
+10. When quoting, quote verbatim and keep the citation right after the quote.
 """
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -182,7 +192,8 @@ def _question_profile(question: str) -> dict:
         "main finding", "main findings", "key finding", "key findings",
         "takeaway", "takeaways", "what did they find", "what were the findings",
         "what are the findings", "main result", "main results", "primary outcome",
-        "conclusion", "conclusions",
+        "conclusion", "conclusions", "main idea", "overall idea",
+        "overall message", "big picture", "summary", "summarize",
     )
     methods_triggers = (
         "method", "methods", "methodology", "study design", "design",
@@ -201,7 +212,7 @@ def _question_profile(question: str) -> dict:
             "abstract", "results", "findings", "discussion", "conclusion", "summary",
         ]
         profile["discouraged_sections"] = ["methods", "limitations", "references"]
-        profile["extra_sources"] = 2
+        profile["extra_sources"] = 4
         return profile
 
     if any(trigger in q for trigger in methods_triggers):
@@ -299,6 +310,10 @@ def _is_heading(line: str) -> bool:
 def _try_fetch_pdf(url: str) -> Optional[bytes]:
     if not url:
         return None
+    r = _get(url)
+    if r and "pdf" in r.headers.get("content-type", "").lower():
+        return r.content
+    return None
 
 
 def _best_effort_make_writable(path: str):
@@ -338,10 +353,6 @@ def ensure_chroma_storage() -> bool:
     except OSError as exc:
         logger.warning("Chroma storage is not writable at %s: %s", _CHROMA_DIR, exc)
         return False
-    r = _get(url)
-    if r and "pdf" in r.headers.get("content-type", "").lower():
-        return r.content
-    return None
 
 
 # ── Source 2 : arXiv PDF ──────────────────────────────────────────────────────
@@ -851,6 +862,131 @@ def build_text_blocks(full_text: str, source: str, pdf_bytes: Optional[bytes] = 
     return blocks
 
 
+def classify_question_intent(question: str) -> str:
+    q = (question or "").lower().strip()
+    if not q:
+        return "specific"
+
+    general_triggers = (
+        "main idea", "main findings", "main finding", "key findings", "key finding",
+        "main takeaway", "takeaway", "takeaways", "summary", "summarize",
+        "overall conclusion", "overall message", "big picture", "what is this paper about",
+        "what did they find", "what are the findings", "main result", "main results",
+    )
+    specific_triggers = (
+        "how many", "what proportion", "what percentage", "what percent", "what was the p-value",
+        "p value", "odds ratio", "hazard ratio", "confidence interval", "sample size",
+        "n=", "dose", "dosage", "mg", "hours", "minutes", "days", "weeks",
+        "age", "number of participants", "how much", "how often", "threshold",
+        "cutoff", "exactly", "statistically significant",
+    )
+
+    has_general = any(trigger in q for trigger in general_triggers)
+    has_specific = any(trigger in q for trigger in specific_triggers) or bool(re.search(r"\b\d+(?:\.\d+)?\b", q))
+
+    if has_general and has_specific:
+        return "hybrid"
+    if has_general:
+        return "general"
+    return "specific"
+
+
+def _sample_blocks_for_profile(text_blocks: list[dict], max_blocks: int = _PROFILE_CONTEXT_BLOCKS) -> list[dict]:
+    if len(text_blocks) <= max_blocks:
+        return text_blocks
+
+    preferred_terms = (
+        "abstract", "introduction", "background", "methods", "results",
+        "discussion", "conclusion", "limitations", "summary",
+    )
+    selected_indices: list[int] = []
+
+    for term in preferred_terms:
+        for idx, block in enumerate(text_blocks):
+            locator = (block.get("locator") or block.get("section") or "").lower()
+            if term in locator and idx not in selected_indices:
+                selected_indices.append(idx)
+                break
+        if len(selected_indices) >= max_blocks:
+            break
+
+    if len(selected_indices) < max_blocks:
+        remaining = max_blocks - len(selected_indices)
+        if remaining >= len(text_blocks):
+            selected_indices.extend(idx for idx in range(len(text_blocks)) if idx not in selected_indices)
+        else:
+            step = (len(text_blocks) - 1) / max(remaining - 1, 1)
+            for i in range(remaining):
+                idx = round(i * step)
+                if idx not in selected_indices:
+                    selected_indices.append(idx)
+            if len(selected_indices) < max_blocks:
+                for idx in range(len(text_blocks)):
+                    if idx not in selected_indices:
+                        selected_indices.append(idx)
+                    if len(selected_indices) >= max_blocks:
+                        break
+
+    selected_indices = sorted(selected_indices[:max_blocks])
+    return [text_blocks[idx] for idx in selected_indices]
+
+
+def build_document_profile_context(text_blocks: list[dict], source: str, max_chars: int = _PROFILE_CONTEXT_CHARS) -> str:
+    if not text_blocks:
+        return ""
+
+    chosen_blocks = _sample_blocks_for_profile(text_blocks)
+    header = f"Content source: {source}\nRepresentative blocks sampled across the full paper:\n"
+    parts = [header]
+
+    for block in chosen_blocks:
+        locator = block.get("locator") or block.get("section") or "Document"
+        excerpt = _normalize_ws(block.get("text") or "")
+        if not excerpt:
+            continue
+        part = f"[{locator}]\n{excerpt}\n"
+        if sum(len(piece) for piece in parts) + len(part) > max_chars:
+            break
+        parts.append(part)
+
+    return "\n".join(parts).strip()
+
+
+def format_document_profile(profile: Optional[dict]) -> str:
+    if not profile:
+        return "No document-level overview available."
+
+    lines: list[str] = []
+    overview = _normalize_ws(profile.get("overview") or "")
+    if overview:
+        lines.append(f"Overview: {overview}")
+
+    findings = [item for item in (profile.get("main_findings") or []) if item]
+    if findings:
+        lines.append("Main findings:")
+        lines.extend(f"- {item}" for item in findings[:4])
+
+    methods = _normalize_ws(profile.get("methods_snapshot") or "")
+    if methods:
+        lines.append(f"Methods snapshot: {methods}")
+
+    limitations = [item for item in (profile.get("limitations") or []) if item]
+    if limitations:
+        lines.append("Limitations:")
+        lines.extend(f"- {item}" for item in limitations[:4])
+
+    section_notes = profile.get("section_notes") or []
+    if section_notes:
+        lines.append("Section notes:")
+        for note in section_notes[:6]:
+            section = _normalize_ws(note.get("section") or "")
+            summary = _normalize_ws(note.get("note") or "")
+            if section and summary:
+                lines.append(f"- {section}: {summary}")
+
+    return "\n".join(lines) if lines else "No document-level overview available."
+
+
 def _anchor_for_chunk(blocks: list[dict], section: str, page: Optional[int], word_start: int) -> Optional[str]:
     for block in blocks:
         if block.get("section") != section:
@@ -1162,7 +1298,14 @@ def retrieve_relevant_sources(chunks: list[dict], question: str,
     return _rank_sources_for_question(merged, question, max_sources=max_sources)
 
 
-def build_rag_system_prompt(paper: dict, question: str, sources: list[dict], source: str = "unknown") -> str:
+def build_rag_system_prompt(
+    paper: dict,
+    question: str,
+    sources: list[dict],
+    source: str = "unknown",
+    document_profile: Optional[dict] = None,
+    strategy: str = "specific",
+) -> str:
     ext     = paper.get("externalIds") or {}
     authors = ", ".join(
         a.get("name", "") for a in (paper.get("authors") or [])[:4]
@@ -1174,6 +1317,12 @@ def build_rag_system_prompt(paper: dict, question: str, sources: list[dict], sou
         for src in sources
     ) or "[S1] No source text available."
 
+    strategy_labels = {
+        "general": "General conceptual question: use the document-level overview to understand the whole paper, then support the answer with the most relevant retrieved sources.",
+        "hybrid": "Hybrid question: combine document-level synthesis with tightly grounded evidence from the retrieved sources.",
+        "specific": "Specific factual question: prioritize tightly grounded evidence from the retrieved sources and use the document overview only as secondary context.",
+    }
+
     return _RAG_SYSTEM_PROMPT.format(
         title=paper.get("title", "Unknown"),
         authors=authors,
@@ -1181,6 +1330,8 @@ def build_rag_system_prompt(paper: dict, question: str, sources: list[dict], sou
         doi=doi,
         source=source,
         question=question,
+        strategy_label=strategy_labels.get(strategy, strategy_labels["specific"]),
+        document_overview_block=format_document_profile(document_profile)[:12000],
         sources_block=sources_block[:18000],
     )
 

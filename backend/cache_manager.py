@@ -98,6 +98,7 @@ class CacheManager:
             "searches": sum(1 for k in self.cache if k.startswith("search_")),
             "papers":   sum(1 for k in self.cache if k.startswith("paper_")),
             "analyses": sum(1 for k in self.cache if k.startswith("analysis_")),
+            "profiles": len(self.cache.get("paper_profiles", {})),
             "total":    len(self.cache),
         }
 
@@ -116,4 +117,13 @@ class CacheManager:
         if "summaries" not in self.cache:
             self.cache["summaries"] = {}
         self.cache["summaries"][paper_id] = summary
+        self._save()
+
+    def get_paper_profile(self, paper_key: str):
+        return self.cache.get("paper_profiles", {}).get(paper_key)
+
+    def set_paper_profile(self, paper_key: str, profile: dict):
+        if "paper_profiles" not in self.cache:
+            self.cache["paper_profiles"] = {}
+        self.cache["paper_profiles"][paper_key] = profile
         self._save()
