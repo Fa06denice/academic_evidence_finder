@@ -1,0 +1,326 @@
+{
+  "name": "paper_chat_benchmark",
+  "description": "Broader grounded-chat benchmark spanning four real open-access papers already seen by the project cache. Cases cover design, population, sample size, and conclusion-level synthesis.",
+  "cases": [
+    {
+      "id": "paper_chat_bench_001",
+      "paper": {
+        "paperId": "b5ecf4471ef3185e84e7cf07c5200981994590bb",
+        "title": "Impact of Coffee Intake on Sleep Quality Among Adults in the Jazan Region, Saudi Arabia: A Cross-Sectional Study",
+        "year": 2025,
+        "authors": [
+          {"authorId": "2262318824", "name": "Mohammad A. Jareebi"},
+          {"authorId": "2377440722", "name": "Waleed A Alabdali"},
+          {"authorId": "2383053384", "name": "Fahad A Alwan"}
+        ],
+        "abstract": "Background: Coffee consumption is a widespread habit globally, and especially among Saudis. However, its association with sleep quality remains unclear. This study aimed to evaluate the effect of coffee consumption on sleep quality among adults in Jazan, Saudi Arabia. Methods: This cross-sectional study utilized an electronic survey targeting residents of the Jazan region aged 18 years and older. Melatonin users, those on caffeine-restricted diets, and non-consenting participants were excluded. The survey included demographic data, coffee intake patterns, and the Sleep Quality Scale (SQS). Results: Among the 824 participants, 695 (84%) reported consuming coffee, with a mean daily intake of 2.24 ± 1.61 cups. Good sleep quality was reported by 92% of participants (mean SQS score: 41 ± 14). No significant association was found between coffee intake and sleep quality. Conclusions: Despite high coffee consumption in Jazan, no significant relationship was observed between coffee intake and sleep quality.",
+        "externalIds": {
+          "PubMedCentral": "12559867",
+          "DOI": "10.7759/cureus.93386",
+          "CorpusId": 281691084,
+          "PubMed": "41164018"
+        },
+        "openAccessPdf": {
+          "url": "",
+          "status": null,
+          "license": "CCBY"
+        }
+      },
+      "question": "What study design did the authors use?",
+      "required_citations": 1,
+      "require_full_text": true,
+      "must_include_any": ["cross-sectional"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Direct methodological extraction."
+    },
+    {
+      "id": "paper_chat_bench_002",
+      "paper": {
+        "paperId": "b5ecf4471ef3185e84e7cf07c5200981994590bb",
+        "title": "Impact of Coffee Intake on Sleep Quality Among Adults in the Jazan Region, Saudi Arabia: A Cross-Sectional Study",
+        "year": 2025,
+        "authors": [
+          {"authorId": "2262318824", "name": "Mohammad A. Jareebi"},
+          {"authorId": "2377440722", "name": "Waleed A Alabdali"},
+          {"authorId": "2383053384", "name": "Fahad A Alwan"}
+        ],
+        "abstract": "Background: Coffee consumption is a widespread habit globally, and especially among Saudis. However, its association with sleep quality remains unclear. This study aimed to evaluate the effect of coffee consumption on sleep quality among adults in Jazan, Saudi Arabia. Methods: This cross-sectional study utilized an electronic survey targeting residents of the Jazan region aged 18 years and older. Results: Among the 824 participants, 695 (84%) reported consuming coffee. Conclusions: Despite high coffee consumption in Jazan, no significant relationship was observed between coffee intake and sleep quality.",
+        "externalIds": {
+          "PubMedCentral": "12559867",
+          "DOI": "10.7759/cureus.93386",
+          "CorpusId": 281691084,
+          "PubMed": "41164018"
+        },
+        "openAccessPdf": {
+          "url": "",
+          "status": null,
+          "license": "CCBY"
+        }
+      },
+      "question": "How many participants were included in the study?",
+      "required_citations": 1,
+      "require_full_text": true,
+      "must_include_any": ["824"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Checks numeric extraction from the full text."
+    },
+    {
+      "id": "paper_chat_bench_003",
+      "paper": {
+        "paperId": "b5ecf4471ef3185e84e7cf07c5200981994590bb",
+        "title": "Impact of Coffee Intake on Sleep Quality Among Adults in the Jazan Region, Saudi Arabia: A Cross-Sectional Study",
+        "year": 2025,
+        "authors": [
+          {"authorId": "2262318824", "name": "Mohammad A. Jareebi"},
+          {"authorId": "2377440722", "name": "Waleed A Alabdali"},
+          {"authorId": "2383053384", "name": "Fahad A Alwan"}
+        ],
+        "abstract": "Background: Coffee consumption is a widespread habit globally, and especially among Saudis. However, its association with sleep quality remains unclear. This study aimed to evaluate the effect of coffee consumption on sleep quality among adults in Jazan, Saudi Arabia. Results: No significant association was found between coffee intake and sleep quality. Conclusions: Despite high coffee consumption in Jazan, no significant relationship was observed between coffee intake and sleep quality.",
+        "externalIds": {
+          "PubMedCentral": "12559867",
+          "DOI": "10.7759/cureus.93386",
+          "CorpusId": 281691084,
+          "PubMed": "41164018"
+        },
+        "openAccessPdf": {
+          "url": "",
+          "status": null,
+          "license": "CCBY"
+        }
+      },
+      "question": "What was the main finding about coffee intake and sleep quality?",
+      "required_citations": 1,
+      "require_full_text": true,
+      "must_include_any": ["no significant association", "no significant relationship", "not significantly associated"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Tests conclusion-level synthesis without leaving the paper."
+    },
+    {
+      "id": "paper_chat_bench_004",
+      "paper": {
+        "paperId": "efa72364478b84d603d81a2b4f40385d634c3bd8",
+        "title": "Mindfulness-Based Cognitive Therapy for Unmedicated Obsessive-Compulsive Disorder: A Randomized Controlled Trial With 6-Month Follow-Up",
+        "year": 2021,
+        "authors": [
+          {"authorId": "145146386", "name": "Tianran Zhang"},
+          {"authorId": "2149373867", "name": "Lu Lu"},
+          {"authorId": "47833121", "name": "F. Didonna"}
+        ],
+        "abstract": "Background: This was the first randomized controlled trial (RCT) designed to compare the efficacy of mindfulness-based cognitive therapy (MBCT) on unmedicated obsessive-compulsive disorder with that of the first-line treatment for OCD (SSRIs) or a placebo. Methods: A total of 123 unmedicated OCD patients with mild to moderate symptoms were randomly assigned into selective serotonin reuptake inhibitors group, MBCT group or psycho-education group. Conclusion: MBCT is effective in the treatment of unmedicated OCD with mild to moderate symptoms comparable to that of SSRIs.",
+        "externalIds": {
+          "PubMedCentral": "8369060",
+          "DOI": "10.3389/fpsyt.2021.661807",
+          "CorpusId": 236780487,
+          "PubMed": "34413795"
+        },
+        "openAccessPdf": {
+          "url": "https://doi.org/10.3389/fpsyt.2021.661807",
+          "status": "GOLD",
+          "license": "CCBY"
+        }
+      },
+      "question": "What type of study was this?",
+      "required_citations": 1,
+      "require_full_text": true,
+      "must_include_any": ["randomized controlled trial", "randomized", "clinical trial", "RCT"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Methodology check on a psychiatric intervention trial."
+    },
+    {
+      "id": "paper_chat_bench_005",
+      "paper": {
+        "paperId": "efa72364478b84d603d81a2b4f40385d634c3bd8",
+        "title": "Mindfulness-Based Cognitive Therapy for Unmedicated Obsessive-Compulsive Disorder: A Randomized Controlled Trial With 6-Month Follow-Up",
+        "year": 2021,
+        "authors": [
+          {"authorId": "145146386", "name": "Tianran Zhang"},
+          {"authorId": "2149373867", "name": "Lu Lu"},
+          {"authorId": "47833121", "name": "F. Didonna"}
+        ],
+        "abstract": "Background: This was the first randomized controlled trial (RCT) designed to compare the efficacy of mindfulness-based cognitive therapy (MBCT) on unmedicated obsessive-compulsive disorder with that of the first-line treatment for OCD (SSRIs) or a placebo. Methods: A total of 123 unmedicated OCD patients with mild to moderate symptoms were randomly assigned into selective serotonin reuptake inhibitors group, MBCT group or psycho-education group. Conclusion: MBCT is effective in the treatment of unmedicated OCD with mild to moderate symptoms comparable to that of SSRIs.",
+        "externalIds": {
+          "PubMedCentral": "8369060",
+          "DOI": "10.3389/fpsyt.2021.661807",
+          "CorpusId": 236780487,
+          "PubMed": "34413795"
+        },
+        "openAccessPdf": {
+          "url": "https://doi.org/10.3389/fpsyt.2021.661807",
+          "status": "GOLD",
+          "license": "CCBY"
+        }
+      },
+      "question": "What treatments were compared and how many patients were enrolled?",
+      "required_citations": 1,
+      "require_full_text": true,
+      "must_include_any": ["123", "MBCT", "SSRIs", "psycho-education"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Checks multi-fact extraction from one answer."
+    },
+    {
+      "id": "paper_chat_bench_006",
+      "paper": {
+        "paperId": "efa72364478b84d603d81a2b4f40385d634c3bd8",
+        "title": "Mindfulness-Based Cognitive Therapy for Unmedicated Obsessive-Compulsive Disorder: A Randomized Controlled Trial With 6-Month Follow-Up",
+        "year": 2021,
+        "authors": [
+          {"authorId": "145146386", "name": "Tianran Zhang"},
+          {"authorId": "2149373867", "name": "Lu Lu"},
+          {"authorId": "47833121", "name": "F. Didonna"}
+        ],
+        "abstract": "Conclusion: MBCT is effective in the treatment of unmedicated OCD with mild to moderate symptoms comparable to that of SSRIs, which contributes to maintain the treatment outcomes at follow-up. Besides, MBCT is safe with a good clinical compliance.",
+        "externalIds": {
+          "PubMedCentral": "8369060",
+          "DOI": "10.3389/fpsyt.2021.661807",
+          "CorpusId": 236780487,
+          "PubMed": "34413795"
+        },
+        "openAccessPdf": {
+          "url": "https://doi.org/10.3389/fpsyt.2021.661807",
+          "status": "GOLD",
+          "license": "CCBY"
+        }
+      },
+      "question": "What was the main conclusion about MBCT?",
+      "required_citations": 1,
+      "require_full_text": true,
+      "must_include_any": ["effective", "comparable to SSRIs", "safe", "good clinical compliance"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "General conclusion question to exercise the dual-pass chat path."
+    },
+    {
+      "id": "paper_chat_bench_007",
+      "paper": {
+        "paperId": "a6a8dd85dfa6077de77ffa2f64e4b6279408b67a",
+        "title": "Effect of exercise for depression: systematic review and network meta-analysis of randomised controlled trials",
+        "year": 2024,
+        "authors": [
+          {"authorId": "25715746", "name": "M. Noetel"},
+          {"authorId": "15012447", "name": "T. Sanders"},
+          {"authorId": "2044887717", "name": "Daniel Gallardo-Gómez"}
+        ],
+        "abstract": "Objective: To identify the optimal dose and modality of exercise for treating major depressive disorder. Design: Systematic review and network meta-analysis. Results: 218 unique studies with a total of 495 arms and 14,170 participants were included. Compared with active controls, moderate reductions in depression were found for walking or jogging, yoga, strength training, mixed aerobic exercises, and tai chi or qigong. Conclusions: Exercise is an effective treatment for depression.",
+        "externalIds": {
+          "PubMedCentral": "10870815",
+          "DOI": "10.1136/bmj-2023-075847",
+          "CorpusId": 267680442,
+          "PubMed": "38355154"
+        },
+        "openAccessPdf": {
+          "url": "https://www.bmj.com/content/bmj/384/bmj-2023-075847.full.pdf",
+          "status": "HYBRID",
+          "license": "CCBYNC"
+        }
+      },
+      "question": "What type of evidence synthesis is this paper?",
+      "required_citations": 1,
+      "require_full_text": true,
+      "must_include_any": ["systematic review", "network meta-analysis"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Checks that Paper Chat identifies evidence type correctly."
+    },
+    {
+      "id": "paper_chat_bench_008",
+      "paper": {
+        "paperId": "a6a8dd85dfa6077de77ffa2f64e4b6279408b67a",
+        "title": "Effect of exercise for depression: systematic review and network meta-analysis of randomised controlled trials",
+        "year": 2024,
+        "authors": [
+          {"authorId": "25715746", "name": "M. Noetel"},
+          {"authorId": "15012447", "name": "T. Sanders"},
+          {"authorId": "2044887717", "name": "Daniel Gallardo-Gómez"}
+        ],
+        "abstract": "Results: Compared with active controls, moderate reductions in depression were found for walking or jogging, yoga, strength training, mixed aerobic exercises, and tai chi or qigong. Conclusions: Exercise is an effective treatment for depression, with walking or jogging, yoga, and strength training more effective than other exercises.",
+        "externalIds": {
+          "PubMedCentral": "10870815",
+          "DOI": "10.1136/bmj-2023-075847",
+          "CorpusId": 267680442,
+          "PubMed": "38355154"
+        },
+        "openAccessPdf": {
+          "url": "https://www.bmj.com/content/bmj/384/bmj-2023-075847.full.pdf",
+          "status": "HYBRID",
+          "license": "CCBYNC"
+        }
+      },
+      "question": "Which exercise modalities were highlighted as more effective for depression?",
+      "required_citations": 1,
+      "require_full_text": true,
+      "must_include_any": ["walking", "jogging", "yoga", "strength training"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "General findings question on a synthesis paper."
+    },
+    {
+      "id": "paper_chat_bench_009",
+      "paper": {
+        "paperId": "5a43b4b1b0d2834d29a3889a52a87072e6b741a7",
+        "title": "Efficacy and Safety of Polyunsaturated Fatty Acids Supplementation in the Treatment of Attention Deficit Hyperactivity Disorder (ADHD) in Children and Adolescents: A Systematic Review and Meta-Analysis of Clinical Trials",
+        "year": 2021,
+        "authors": [
+          {"authorId": "5603202", "name": "M. N. Händel"},
+          {"authorId": "5311230", "name": "J. F. Rohde"},
+          {"authorId": "26375901", "name": "Marie Louise Rimestad"}
+        ],
+        "abstract": "Objective: To identify and critically assess the evidence for polyunsaturated fatty acids (PUFAs) in attention deficit hyperactivity disorder. We identified 31 relevant randomized controlled trials including 1755 patients. The results showed no effect on ADHD core symptoms rated by parents or teachers. For now, there seems to be no benefit of PUFA in ADHD treatment; however, the certainty of evidence is questionable.",
+        "externalIds": {
+          "PubMedCentral": "8068201",
+          "DOI": "10.3390/nu13041226",
+          "CorpusId": 233388592,
+          "PubMed": "33917727"
+        },
+        "openAccessPdf": {
+          "url": "https://www.mdpi.com/2072-6643/13/4/1226/pdf?version=1617941341",
+          "status": "GOLD",
+          "license": "CCBY"
+        }
+      },
+      "question": "What population and intervention did this review focus on?",
+      "required_citations": 1,
+      "require_full_text": true,
+      "must_include_any": ["children", "adolescents", "ADHD", "PUFA", "polyunsaturated fatty acids"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Population and intervention extraction."
+    },
+    {
+      "id": "paper_chat_bench_010",
+      "paper": {
+        "paperId": "5a43b4b1b0d2834d29a3889a52a87072e6b741a7",
+        "title": "Efficacy and Safety of Polyunsaturated Fatty Acids Supplementation in the Treatment of Attention Deficit Hyperactivity Disorder (ADHD) in Children and Adolescents: A Systematic Review and Meta-Analysis of Clinical Trials",
+        "year": 2021,
+        "authors": [
+          {"authorId": "5603202", "name": "M. N. Händel"},
+          {"authorId": "5311230", "name": "J. F. Rohde"},
+          {"authorId": "26375901", "name": "Marie Louise Rimestad"}
+        ],
+        "abstract": "We identified 31 relevant randomized controlled trials including 1755 patients. The results showed no effect on ADHD core symptoms rated by parents or teachers. PUFA did not increase the occurrence of side effects. For now, there seems to be no benefit of PUFA in ADHD treatment; however, the certainty of evidence is questionable, and thus no conclusive guidance can be made.",
+        "externalIds": {
+          "PubMedCentral": "8068201",
+          "DOI": "10.3390/nu13041226",
+          "CorpusId": 233388592,
+          "PubMed": "33917727"
+        },
+        "openAccessPdf": {
+          "url": "https://www.mdpi.com/2072-6643/13/4/1226/pdf?version=1617941341",
+          "status": "GOLD",
+          "license": "CCBY"
+        }
+      },
+      "question": "What was the main conclusion about PUFA supplementation for ADHD?",
+      "required_citations": 1,
+      "require_full_text": true,
+      "must_include_any": ["no benefit", "no effect", "no conclusive guidance", "no clear benefit"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Negative synthesis case: the answer should stay grounded and not overclaim benefit."
+    }
+  ]
+}

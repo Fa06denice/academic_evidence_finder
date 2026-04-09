@@ -35,12 +35,14 @@ def evaluate_case(base_url: str, case: dict) -> dict:
         "relevant_enough": relevant_count >= min_relevant,
         "verdict_matches": (not expected_verdicts) or overall_verdict in expected_verdicts,
     }
-    passed = all(checks.values())
+    hard_error = bool(error)
+    passed = (not hard_error) and all(checks.values())
+    status = "error" if hard_error else ("passed" if passed else "failed")
 
     return {
         "id": case["id"],
         "claim": case["claim"],
-        "status": "passed" if passed else "failed",
+        "status": status,
         "error": error,
         "overall_verdict": overall_verdict,
         "overall_confidence": verdict.get("overall_confidence", ""),

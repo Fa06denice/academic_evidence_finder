@@ -43,6 +43,15 @@ Useful fields:
 - `relevant_papers`
 - `checks`
 
+Broader benchmark:
+
+```bash
+python3 eval/run_claim_eval.py \
+  --dataset eval/datasets/claim_verifier_benchmark.json \
+  --base-url https://academicevidencefinder-production.up.railway.app \
+  --workers 2
+```
+
 ## Paper Chat evaluation
 
 Starter dataset:
@@ -65,6 +74,15 @@ Useful fields:
 - `answer_preview`
 - `checks`
 
+Broader benchmark:
+
+```bash
+python3 eval/run_paper_chat_eval.py \
+  --dataset eval/datasets/paper_chat_benchmark.json \
+  --base-url https://academicevidencefinder-production.up.railway.app \
+  --workers 1
+```
+
 ## Datasets
 
 Two kinds of datasets are provided:
@@ -76,6 +94,10 @@ Two kinds of datasets are provided:
 - `*_template.json`
   - schema templates for your own gold dataset
   - recommended for final grading
+
+- `*_benchmark.json`
+  - broader, presentation-ready benchmark datasets
+  - stronger than the smoke sets but still small enough to run live
 
 ## Recommended next step
 

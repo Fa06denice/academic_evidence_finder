@@ -339,7 +339,7 @@ def backfill_paper_index(cache_manager) -> int:
     collected: dict[str, dict] = {}
 
     try:
-        for key, entry in (cache_manager.cache or {}).items():
+        for key, entry in list((cache_manager.cache or {}).items()):
             if not isinstance(entry, dict):
                 continue
             data = entry.get("data")

@@ -1,0 +1,50 @@
+{
+  "name": "claim_verifier_benchmark",
+  "description": "Broader benchmark for claim verification. These cases are still lightweight enough for a live grading session, but stricter than the smoke dataset and cover supported, nuanced, and contradicting claims.",
+  "cases": [
+    {
+      "id": "claim_bench_001",
+      "claim": "Caffeine worsens sleep quality in adults.",
+      "max_papers": 8,
+      "year_filter": null,
+      "expected_verdicts": ["SUPPORTED", "PARTIALLY_SUPPORTED"],
+      "min_analysed_papers": 5,
+      "min_relevant_papers": 2,
+      "relevance_threshold": 4,
+      "notes": "Literature-rich sleep topic; tests whether the system can retrieve strong review-level evidence."
+    },
+    {
+      "id": "claim_bench_002",
+      "claim": "Mindfulness-based cognitive therapy improves obsessive-compulsive disorder symptoms.",
+      "max_papers": 7,
+      "year_filter": null,
+      "expected_verdicts": ["SUPPORTED", "PARTIALLY_SUPPORTED"],
+      "min_analysed_papers": 4,
+      "min_relevant_papers": 2,
+      "relevance_threshold": 4,
+      "notes": "Intervention-driven psychiatric claim with direct trial evidence available."
+    },
+    {
+      "id": "claim_bench_003",
+      "claim": "Exercise is an effective treatment for depression.",
+      "max_papers": 8,
+      "year_filter": null,
+      "expected_verdicts": ["SUPPORTED", "PARTIALLY_SUPPORTED"],
+      "min_analysed_papers": 5,
+      "min_relevant_papers": 2,
+      "relevance_threshold": 4,
+      "notes": "High-volume evidence area with systematic reviews and meta-analyses."
+    },
+    {
+      "id": "claim_bench_004",
+      "claim": "Polyunsaturated fatty acid supplementation improves ADHD core symptoms in children and adolescents.",
+      "max_papers": 8,
+      "year_filter": null,
+      "expected_verdicts": ["CONTRADICTED", "MIXED"],
+      "min_analysed_papers": 4,
+      "min_relevant_papers": 2,
+      "relevance_threshold": 4,
+      "notes": "Negative-control style case: the key review in cache reports no clear benefit on ADHD core symptoms."
+    }
+  ]
+}

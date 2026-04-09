@@ -51,13 +51,15 @@ def evaluate_case(base_url: str, case: dict) -> dict:
         "avoids_forbidden": not must_not_include or not contains_any(answer, must_not_include),
         "full_text_available": (not require_full_text) or bool(fetch_payload.get("available")),
     }
-    passed = all(checks.values())
+    hard_error = bool(error)
+    passed = (not hard_error) and all(checks.values())
+    status = "error" if hard_error else ("passed" if passed else "failed")
 
     return {
         "id": case["id"],
         "question": question,
         "paper_title": paper.get("title", ""),
-        "status": "passed" if passed else "failed",
+        "status": status,
         "error": error,
         "source_type": fetch_payload.get("source", ""),
         "full_text_available": bool(fetch_payload.get("available")),
