@@ -39,53 +39,93 @@ def langgraph_verify_available() -> bool:
     return bool(StateGraph and get_stream_writer and START is not None and END is not None)
 
 
-def _research_graph_mermaid(final_label: str, warning_text: str) -> str:
-    return "\n".join([
-        "flowchart TD",
-        '    A([Start]) --> B[Generate Queries]',
-        '    B --> C[Search Candidates]',
-        '    C --> D[Analyze Candidates]',
-        '    D --> E{Critique Results}',
-        f'    E -->|enough evidence| F[{final_label}]',
-        '    E -->|need refinement| G[Refine Queries]',
-        f'    E -->|stop with limited evidence| H[{warning_text}]',
-        '    G --> C',
-        '    F --> I([End])',
-        '    H --> F',
-    ])
+def _workflow_definition(kind: Literal["claim_verifier", "literature_review"]) -> dict:
+    if kind == "claim_verifier":
+        final_node = "finalize_verdict"
+        final_label = "Synthesize Verdict"
+        warning_label = "Warn: limited evidence"
+    else:
+        final_node = "finalize_review"
+        final_label = "Write Literature Review"
+        warning_label = "Warn: limited relevant papers"
+
+    return {
+        "kind": kind,
+        "nodes": {
+            "generate_queries": "Generate Queries",
+            "search_candidates": "Search Candidates",
+            "analyze_candidates": "Analyze Candidates",
+            "critique_results": "Critique Results",
+            "refine_queries": "Refine Queries",
+            "warning_then_finalize": warning_label,
+            final_node: final_label,
+        },
+        "start": "generate_queries",
+        "edges": [
+            ("generate_queries", "search_candidates"),
+            ("search_candidates", "analyze_candidates"),
+            ("analyze_candidates", "critique_results"),
+            ("refine_queries", "search_candidates"),
+            ("warning_then_finalize", final_node),
+            (final_node, "__end__"),
+        ],
+        "conditional_edges": {
+            "critique_results": {
+                "enough evidence": final_node,
+                "need refinement": "refine_queries",
+                "stop with limited evidence": "warning_then_finalize",
+            }
+        },
+        "final_node": final_node,
+    }
+
+
+def _mermaid_id(node_name: str) -> str:
+    return {
+        "__start__": "START",
+        "__end__": "END",
+        "warning_then_finalize": "WARN",
+    }.get(node_name, node_name.upper())
+
+
+def _mermaid_node(node_name: str, label: str) -> str:
+    node_id = _mermaid_id(node_name)
+    if node_name == "__start__":
+        return f'    {node_id}([Start])'
+    if node_name == "__end__":
+        return f'    {node_id}([End])'
+    if node_name == "critique_results":
+        return f'    {node_id}{{{label}}}'
+    return f'    {node_id}[{label}]'
+
+
+def _workflow_mermaid(definition: dict) -> str:
+    lines = ["flowchart TD"]
+    lines.append(_mermaid_node("__start__", "Start"))
+    for node_name, label in definition["nodes"].items():
+        lines.append(_mermaid_node(node_name, label))
+    lines.append(_mermaid_node("__end__", "End"))
+
+    lines.append(f"    {_mermaid_id('__start__')} --> {_mermaid_id(definition['start'])}")
+    for source, target in definition["edges"]:
+        lines.append(f"    {_mermaid_id(source)} --> {_mermaid_id(target)}")
+    for source, transitions in definition["conditional_edges"].items():
+        for label, target in transitions.items():
+            lines.append(f"    {_mermaid_id(source)} -->|{label}| {_mermaid_id(target)}")
+    return "\n".join(lines)
 
 
 def workflow_graphs() -> dict:
     return {
         "claim_verifier": {
             "available": langgraph_verify_available(),
-            "nodes": [
-                "generate_queries",
-                "search_candidates",
-                "analyze_candidates",
-                "critique_results",
-                "refine_queries",
-                "finalize_verdict",
-            ],
-            "mermaid": _research_graph_mermaid(
-                final_label="Synthesize Verdict",
-                warning_text="Warn: limited evidence",
-            ),
+            "nodes": list(_workflow_definition("claim_verifier")["nodes"].keys()),
+            "mermaid": _workflow_mermaid(_workflow_definition("claim_verifier")),
         },
         "literature_review": {
             "available": langgraph_verify_available(),
-            "nodes": [
-                "generate_queries",
-                "search_candidates",
-                "analyze_candidates",
-                "critique_results",
-                "refine_queries",
-                "finalize_review",
-            ],
-            "mermaid": _research_graph_mermaid(
-                final_label="Write Literature Review",
-                warning_text="Warn: limited relevant papers",
-            ),
+            "nodes": list(_workflow_definition("literature_review")["nodes"].keys()),
+            "mermaid": _workflow_mermaid(_workflow_definition("literature_review")),
         },
     }
 
@@ -120,6 +160,8 @@ def _stream_research_graph(
 ) -> Iterable[dict]:
     if not langgraph_verify_available():
         raise RuntimeError("LangGraph is not installed")
+
+    definition = _workflow_definition("claim_verifier" if final_event_type == "verdict" else "literature_review")
 
     def emit(event_type: str, **payload):
         writer = get_stream_writer()
@@ -280,22 +322,26 @@ def _stream_research_graph(
             return {"decision": "end"}
 
         if relevant_count >= state["max_papers"]:
-            return {"decision": "synthesize"}
+            return {"decision": "enough_evidence"}
 
         if retry_round < MAX_RETRIES and (pending_papers or all_results):
             return {
-                "decision": "refine",
+                "decision": "need_refinement",
                 "retry_round": retry_round + 1,
                 "current_queries": enrich_queries(state.get("base_queries") or [state["subject"]], retry_round),
             }
 
         if relevant_count < state["max_papers"]:
-            emit("warning", message=insufficiency_warning(state))
-        return {"decision": "synthesize"}
+            return {"decision": "limited_evidence"}
+        return {"decision": "enough_evidence"}
 
     def refine_queries(state: ResearchState) -> dict:
         emit("progress", message="Refining search strategy…", step=analysis_step, total=total_steps)
         return {"pending_papers": [], "abort": False}
+
+    def warning_then_finalize(state: ResearchState) -> dict:
+        emit("warning", message=insufficiency_warning(state))
+        return {}
 
     def finalize_output(state: ResearchState) -> dict:
         fn, args = final_builder(state)
@@ -316,12 +362,14 @@ def _stream_research_graph(
         emit(final_event_type, data=payload)
         return {"overall" if final_event_type == "verdict" else "review": payload}
 
-    def route_after_critique(state: ResearchState) -> Literal["refine_queries", "finalize_output", END]:
+    def route_after_critique(state: ResearchState):
         decision = state.get("decision")
-        if decision == "refine":
-            return "refine_queries"
-        if decision == "synthesize":
-            return "finalize_output"
+        if decision == "need_refinement":
+            return definition["conditional_edges"]["critique_results"]["need refinement"]
+        if decision == "limited_evidence":
+            return definition["conditional_edges"]["critique_results"]["stop with limited evidence"]
+        if decision == "enough_evidence":
+            return definition["conditional_edges"]["critique_results"]["enough evidence"]
         return END
 
     graph = StateGraph(ResearchState)
@@ -330,19 +378,25 @@ def _stream_research_graph(
     graph.add_node("analyze_candidates", analyze_candidates)
     graph.add_node("critique_results", critique_results)
     graph.add_node("refine_queries", refine_queries)
-    graph.add_node("finalize_output", finalize_output)
+    graph.add_node("warning_then_finalize", warning_then_finalize)
+    graph.add_node(definition["final_node"], finalize_output)
 
-    graph.add_edge(START, "generate_queries")
-    graph.add_edge("generate_queries", "search_candidates")
-    graph.add_edge("search_candidates", "analyze_candidates")
-    graph.add_edge("analyze_candidates", "critique_results")
+    graph.add_edge(START, definition["start"])
+    for source, target in definition["edges"]:
+        if target == "__end__":
+            continue
+        graph.add_edge(source, target)
     graph.add_conditional_edges(
         "critique_results",
         route_after_critique,
-        ["refine_queries", "finalize_output", END],
+        [
+            definition["conditional_edges"]["critique_results"]["need refinement"],
+            definition["conditional_edges"]["critique_results"]["stop with limited evidence"],
+            definition["final_node"],
+            END,
+        ],
     )
-    graph.add_edge("refine_queries", "search_candidates")
-    graph.add_edge("finalize_output", END)
+    graph.add_edge(definition["final_node"], END)
 
     compiled = graph.compile()
     initial_state: ResearchState = {
