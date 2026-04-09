@@ -16,6 +16,7 @@ from analyzer import PaperAnalyzer
 from scholar_client import SemanticScholarClient
 from cache_manager import CacheManager
 from paper_index import backfill_paper_index, index_papers, paper_index_stats, search_local_papers
+from verify_graph import langgraph_verify_available, stream_verify_claim_graph
 from paper_chat import (
     chroma_debug_info,
     classify_question_intent,
@@ -265,7 +266,7 @@ def health():
 
 @app.post("/api/verify")
 def verify_claim(req: ClaimRequest):
-    def generate():
+    def legacy_generate():
         try:
             early = analyzer.validate_claim(req.claim)
             if early:
@@ -436,7 +437,41 @@ def verify_claim(req: ClaimRequest):
             yield _sse("error", {"message": str(exc)})
             yield _sse("done", {})
 
-    return StreamingResponse(generate(), media_type="text/event-stream",
+    def graph_generate():
+        try:
+            logger.info("verify_claim using LangGraph workflow")
+            early = analyzer.validate_claim(req.claim)
+            if early:
+                yield _sse("verdict", {"data": early})
+                yield _sse("done", {})
+                return
+
+            for chunk in stream_verify_claim_graph(
+                claim=req.claim,
+                max_papers=req.max_papers,
+                year_filter=req.year_filter,
+                analyzer=analyzer,
+                cache=cache,
+                fetch_papers=_fetch_papers,
+                enrich_queries=_enrich_queries,
+                run_with_heartbeat=_run_with_heartbeat,
+            ):
+                event_type = chunk.get("type")
+                if not event_type:
+                    continue
+                payload = {k: v for k, v in chunk.items() if k != "type"}
+                yield _sse(event_type, payload)
+
+            yield _sse("done", {})
+        except Exception as exc:
+            logger.exception("verify_claim graph error")
+            yield _sse("error", {"message": str(exc)})
+            yield _sse("done", {})
+
+    if not langgraph_verify_available():
+        logger.warning("LangGraph unavailable; /api/verify is using the legacy workflow")
+    generator = graph_generate if langgraph_verify_available() else legacy_generate
+    return StreamingResponse(generator(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 
