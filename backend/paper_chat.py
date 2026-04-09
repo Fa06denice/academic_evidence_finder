@@ -5,6 +5,7 @@ import logging
 import math
 import os
 import re
+import stat
 import shutil
 from collections import Counter
 from typing import Optional
@@ -340,6 +341,17 @@ def _best_effort_make_writable(path: str):
                         pass
         elif os.path.exists(path):
             os.chmod(path, 0o664)
+    except OSError:
+        pass
+
+
+def _rmtree_retry_readonly(func, path, exc_info):
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR | stat.S_IXUSR)
+    except OSError:
+        pass
+    try:
+        func(path)
     except OSError:
         pass
 
@@ -1396,8 +1408,12 @@ def build_sources_payload(sources: list[dict], answer_text: str = "") -> dict:
 def clear_chroma_store(path: Optional[str] = None):
     storage_dir = path or _CHROMA_DIR_CHAT
     if chromadb and os.path.isdir(storage_dir):
-        shutil.rmtree(storage_dir, ignore_errors=True)
-        logger.info("Cleared Chroma store at %s", storage_dir)
+        _best_effort_make_writable(storage_dir)
+        shutil.rmtree(storage_dir, onerror=_rmtree_retry_readonly)
+        if os.path.exists(storage_dir):
+            logger.warning("Chroma store could not be fully removed at %s", storage_dir)
+        else:
+            logger.info("Cleared Chroma store at %s", storage_dir)
 
 
 def chroma_debug_info(path: Optional[str] = None) -> dict:

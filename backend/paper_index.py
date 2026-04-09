@@ -138,6 +138,20 @@ def _get_collection():
         return None
 
 
+def _get_client():
+    if not paper_index_enabled():
+        return None
+    if not ensure_chroma_storage(_CHROMA_DIR_INDEX):
+        return None
+
+    try:
+        return chromadb.PersistentClient(path=_CHROMA_DIR_INDEX)
+    except Exception as exc:
+        _set_paper_index_error(exc)
+        logger.warning("Global paper index client unavailable: %s", exc)
+        return None
+
+
 def paper_index_stats() -> dict:
     collection = _get_collection()
     if collection is None:
@@ -354,4 +368,27 @@ def backfill_paper_index(cache_manager) -> int:
 
 
 def clear_paper_index_store():
+    global _PAPER_INDEX_LAST_ERROR
+    _PAPER_INDEX_LAST_ERROR = ""
+
+    client = _get_client()
+    if client is not None:
+        try:
+            existing = {
+                getattr(collection, "name", str(collection))
+                for collection in client.list_collections()
+            }
+            if _PAPER_COLLECTION in existing:
+                client.delete_collection(_PAPER_COLLECTION)
+                logger.info("Cleared paper index collection %s at %s", _PAPER_COLLECTION, _CHROMA_DIR_INDEX)
+            else:
+                logger.info("Paper index collection %s already absent at %s", _PAPER_COLLECTION, _CHROMA_DIR_INDEX)
+            return
+        except Exception as exc:
+            _set_paper_index_error(exc)
+            logger.warning(
+                "Could not clear paper index collection cleanly, falling back to directory reset: %s",
+                exc,
+            )
+
     clear_chroma_store(_CHROMA_DIR_INDEX)
