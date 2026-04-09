@@ -139,7 +139,7 @@ const features = [
   {
     icon: '💬',
     name: 'Paper Chat',
-    desc: "Pose des questions à un paper spécifique. Le LLM répond en se basant strictement sur l'abstract fourni."
+    desc: "Pose des questions à un paper spécifique. Le backend récupère le full text quand il est disponible, construit un contexte RAG sourcé et affiche les passages utilisés."
   },
 ]
 
@@ -168,7 +168,7 @@ const risks = [
 
 const limitations = [
   "Les requêtes sont générées en anglais. Un claim en français sera traduit, ce qui peut introduire des nuances perdues.",
-  "Seuls les abstracts sont analysés — pas les corps des articles. Un résultat mentionné uniquement dans les résultats détaillés sera invisible.",
+  "Dans Claim Verifier, l'analyse de stance repose surtout sur les métadonnées et abstracts récupérés ; tous les corps d'articles ne sont pas disponibles ou exploitables de la même façon.",
   "Le score de pertinence (0–10) est une estimation LLM, pas un calcul statistique rigoureux. Le seuil de filtrage est fixé à ≥ 4.",
   "Les papers très récents (< 6 mois) sont sous-représentés car peu indexés et peu cités.",
   "Les comparaisons A vs B très générales couvrent un spectre trop large — les papers trouvés portent souvent sur des sous-domaines spécifiques, pas la question globale.",

@@ -4,6 +4,8 @@ __pycache__/
 *.pyo
 paper_cache.json
 .env
+.streamlit/
+.chroma/
 
 # Node
 frontend/node_modules/
