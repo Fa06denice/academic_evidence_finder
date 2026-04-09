@@ -129,6 +129,25 @@
         <h2 class="text-sm font-semibold text-white">Literature Review from Selected Papers</h2>
         <span class="text-xs text-muted">Claim: {{ claim }}</span>
       </div>
+      <div v-if="selectedReviewAssessment" class="mb-4 rounded-2xl border border-border bg-surface p-4">
+        <div class="flex flex-wrap items-center gap-4">
+          <div>
+            <div class="text-[11px] font-semibold uppercase tracking-wider text-muted">Review relevance</div>
+            <div class="mt-1 text-lg font-bold text-white">{{ selectedReviewAssessment.relevance_score }}/10</div>
+          </div>
+          <div>
+            <div class="text-[11px] font-semibold uppercase tracking-wider text-muted">Citation fit</div>
+            <div class="mt-1 text-lg font-bold text-white">{{ selectedReviewAssessment.citation_relevance }}/10</div>
+          </div>
+          <div>
+            <div class="text-[11px] font-semibold uppercase tracking-wider text-muted">Confidence</div>
+            <div class="mt-1 text-lg font-bold text-white">{{ selectedReviewAssessment.confidence }}</div>
+          </div>
+        </div>
+        <p v-if="selectedReviewAssessment.assessment" class="mt-3 text-sm leading-relaxed text-muted">
+          {{ selectedReviewAssessment.assessment }}
+        </p>
+      </div>
       <div class="rounded-2xl border border-border bg-surface p-6">
         <div class="prose prose-invert prose-sm max-w-none">
           <div v-if="selectedReviewSections.length">
@@ -180,6 +199,7 @@ const reviewLoading = ref(false)
 const reviewError = ref('')
 const errorMsg = ref('')
 const selectedReviewRaw = ref(null)
+const selectedReviewAssessment = ref(null)
 
 const filters = [
   { val: 'ALL',         label: 'All' },
@@ -243,6 +263,7 @@ function clearLocalState() {
   reviewError.value = ''
   errorMsg.value = ''
   selectedReviewRaw.value = null
+  selectedReviewAssessment.value = null
 }
 
 onMounted(() => {
@@ -331,6 +352,7 @@ async function generateSelectedReview() {
   reviewLoading.value = true
   reviewError.value = ''
   selectedReviewRaw.value = null
+  selectedReviewAssessment.value = null
 
   try {
     const response = await post('/api/verify/review', {
@@ -338,6 +360,7 @@ async function generateSelectedReview() {
       items: selectedResults.value,
     })
     selectedReviewRaw.value = response.review
+    selectedReviewAssessment.value = response.assessment || null
   } catch (err) {
     reviewError.value = err.message
   } finally {

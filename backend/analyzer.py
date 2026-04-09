@@ -232,6 +232,38 @@ RULES:
 - Use only information present in the provided papers.
 """
 
+_REVIEW_RELEVANCE = """\
+You are auditing whether a generated literature review is truly relevant to the scientific claim and whether the cited evidence set is appropriate.
+
+CLAIM:
+{claim}
+
+GENERATED REVIEW:
+{review}
+
+PAPERS USED:
+{papers_text}
+
+Task:
+Score how relevant and well-grounded the generated review is with respect to the claim and the papers used.
+
+SCORING:
+- relevance_score: 0 to 10
+  0-2 = mostly off-topic
+  3-4 = weakly connected to the claim
+  5-6 = partially relevant but with noticeable drift
+  7-8 = relevant and mostly grounded
+  9-10 = highly relevant, tightly aligned to the claim and evidence set
+- citation_relevance: 0 to 10
+  Score whether the selected papers appear genuinely appropriate to support the review's main claims.
+
+Return ONLY a raw JSON object with:
+  "relevance_score": integer,
+  "citation_relevance": integer,
+  "confidence": one of HIGH | MEDIUM | LOW,
+  "assessment": short paragraph, 2 sentences max
+"""
+
 _SUMMARIZE = """\
 You are an expert academic research assistant.
 
@@ -542,6 +574,14 @@ class PaperAnalyzer:
             "neutral_count":       _safe_int(d.get("neutral_count"),       0),
         }
 
+    def _norm_review_assessment(self, d: dict) -> dict:
+        return {
+            "relevance_score": _safe_int(d.get("relevance_score"), 0),
+            "citation_relevance": _safe_int(d.get("citation_relevance"), 0),
+            "confidence": d.get("confidence", "LOW") if d.get("confidence") in self.VALID_CONF else "LOW",
+            "assessment": str(d.get("assessment") or ""),
+        }
+
     # ── public API ────────────────────────────────────────────────────────────
 
     def transform_query(self, user_input: str, topic_mode: bool = False, max_papers: int = 7) -> List[str]:
@@ -656,6 +696,45 @@ class PaperAnalyzer:
             )
         except Exception as exc:
             return "Literature review generation failed: " + str(exc)
+
+    def review_relevance(self, claim: str, review: str, results: List[Tuple[dict, dict]]) -> dict:
+        if not results:
+            return self._norm_review_assessment({
+                "relevance_score": 0,
+                "citation_relevance": 0,
+                "confidence": "LOW",
+                "assessment": "No analysed papers were provided, so the review relevance could not be assessed.",
+            })
+
+        papers_text = ""
+        for paper, analysis in results:
+            papers_text += (
+                "\n---\n"
+                "Title: " + paper.get("title", "Unknown") + "\n"
+                "Authors: " + _author_str(paper) + "\n"
+                "Year: " + str(paper.get("year", "N/A")) + "\n"
+                "Verdict: " + analysis.get("verdict", "N/A") + "\n"
+                "Relevance Score: " + str(analysis.get("relevance_score", 0)) + "/10\n"
+                "Key Finding: " + analysis.get("key_finding", "N/A") + "\n"
+                "Evidence: " + analysis.get("evidence", "N/A") + "\n"
+            )
+
+        avg_relevance = round(
+            sum(_safe_int(a.get("relevance_score"), 0) for _, a in results) / max(len(results), 1)
+        )
+        fallback = {
+            "relevance_score": avg_relevance,
+            "citation_relevance": avg_relevance,
+            "confidence": "MEDIUM" if avg_relevance >= 6 else "LOW",
+            "assessment": "The review relevance was approximated from the selected paper analyses because the evaluator could not complete.",
+        }
+
+        prompt = _REVIEW_RELEVANCE.format(
+            claim=claim,
+            review=(review or "")[:7000],
+            papers_text=papers_text[:9000],
+        )
+        return self._norm_review_assessment(self._parse(self._llm(prompt, temperature=0.1, max_tokens=500), fallback))
 
     def summarize(self, paper: dict) -> str:
         abstract = (paper.get("abstract") or "").strip()

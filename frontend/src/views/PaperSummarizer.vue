@@ -14,6 +14,15 @@
       />
       <div class="flex items-center gap-4 mt-4">
         <PaperCountPicker v-model="maxPapers" label="Results" :disabled="loading" />
+        <label class="inline-flex items-center gap-2 text-xs text-muted">
+          <input
+            v-model="exactTitle"
+            type="checkbox"
+            :disabled="loading"
+            class="h-4 w-4 rounded border-border bg-surface2 text-accent focus:ring-accent/40"
+          />
+          <span>I know the exact title</span>
+        </label>
         <button type="button" @click="submit" :disabled="loading || !query.trim()"
           class="ml-auto px-5 py-2.5 bg-accent hover:bg-accent-hover disabled:opacity-40 text-white text-sm font-medium rounded-xl transition-all flex items-center gap-2">
           <span v-if="loading" class="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin"></span>
@@ -80,6 +89,7 @@ import PaperCountPicker from '../components/PaperCountPicker.vue'
 const router     = useRouter()
 const query      = ref('')
 const maxPapers  = ref(10)
+const exactTitle = ref(false)
 const loading    = ref(false)
 const progress   = ref('Searching…')
 const papers     = ref([])
@@ -96,7 +106,7 @@ async function submit() {
   lastQuery.value = query.value
   progress.value  = 'Searching…'
 
-  const body = { topic: query.value, max_papers: maxPapers.value }
+  const body = { topic: query.value, max_papers: maxPapers.value, exact_title: exactTitle.value }
   console.log('[submit] body:', body)
 
   await streamPost('/api/search', body, {

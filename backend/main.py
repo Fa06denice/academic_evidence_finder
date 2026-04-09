@@ -2,6 +2,7 @@ import json
 import logging
 import os
 import base64
+import re
 from typing import Optional
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeoutError
 
@@ -120,6 +121,27 @@ def _paper_cache_key(paper: dict) -> str:
         or ""
     ).strip().lower()
 
+
+def _normalize_title(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", " ", (text or "").lower()).strip()
+
+
+def _prioritize_exact_title_matches(papers: list, title: str) -> list:
+    if not title:
+        return papers
+
+    wanted = _normalize_title(title)
+    if not wanted:
+        return papers
+
+    def rank(paper: dict):
+        actual = _normalize_title(paper.get("title", ""))
+        exact = 1 if actual == wanted else 0
+        contains = 1 if wanted and wanted in actual else 0
+        return (exact, contains, paper.get("citationCount") or 0)
+
+    return sorted(papers, key=rank, reverse=True)
+
 def _fetch_papers(
     queries: list,
     max_papers: int,
@@ -185,6 +207,7 @@ class TopicRequest(BaseModel):
     topic: str
     max_papers: int = 7
     year_filter: Optional[str] = None
+    exact_title: bool = False
 
 class ClaimReviewRequest(BaseModel):
     claim: str
@@ -574,7 +597,8 @@ async def review_from_claim_results(req: ClaimReviewRequest):
             )
 
         review = analyzer.literature_review(req.claim, selected_results)
-        return {"review": review}
+        assessment = analyzer.review_relevance(req.claim, review, selected_results)
+        return {"review": review, "assessment": assessment}
 
     except Exception as exc:
         logger.exception("review_from_claim_results error")
@@ -601,6 +625,17 @@ def search_papers(req: TopicRequest):
                     yield _sse("progress", update["value"])
                 else:
                     queries = update["value"]
+            if req.exact_title and req.topic.strip():
+                exact_queries = [f"\"{req.topic.strip()}\"", req.topic.strip()]
+                deduped = []
+                seen_queries = set()
+                for q in exact_queries + (queries or []):
+                    key = q.strip().lower()
+                    if not key or key in seen_queries:
+                        continue
+                    seen_queries.add(key)
+                    deduped.append(q)
+                queries = deduped
             yield _sse("progress", {"message": "Searching…"})
             papers = None
             search_error = None
@@ -619,6 +654,8 @@ def search_papers(req: TopicRequest):
                 yield _sse("error", {"message": search_error or "No papers found. Try rephrasing."})
                 yield _sse("done", {})
                 return
+            if req.exact_title:
+                papers = _prioritize_exact_title_matches(papers, req.topic)
             yield _sse("papers", {"data": papers})
             yield _sse("done", {})
         except Exception as exc:
