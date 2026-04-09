@@ -235,8 +235,9 @@
 </template>
 
 <script setup>
-import { ref, computed, nextTick, onMounted } from 'vue'
+import { ref, computed, nextTick, onMounted, onUnmounted } from 'vue'
 import { streamPost, post } from '../api/index.js'
+import { historyStore } from '../stores/history.js'
 
 // Paper state
 const paper       = ref(null)
@@ -282,10 +283,15 @@ const suggestedQuestions = [
 
 // ── On mount: check router state
 onMounted(() => {
+  window.addEventListener('aef:reuse-history', handleHistoryReplay)
   const state = window.history.state
   if (state?.paper) {
     try { loadPaperObject(JSON.parse(state.paper)) } catch {}
   }
+})
+
+onUnmounted(() => {
+  window.removeEventListener('aef:reuse-history', handleHistoryReplay)
 })
 
 // ── Load by manual ID
@@ -317,6 +323,14 @@ async function loadPaperObject(p) {
     fetchSource.value = res.source    || 'unknown'
     fetchAvail.value  = res.available ?? false
     textBlocks.value  = res.text_blocks || []
+    historyStore.add({
+      type: 'chat',
+      query: paper.value?.title || paper.value?.paperId || p?.paperId || 'Paper Chat',
+      path: '/chat',
+      routeState: {
+        paper: JSON.stringify(paper.value),
+      },
+    })
   } catch (e) {
     fetchError.value = e.message || 'Failed to fetch paper.'
   } finally {
@@ -416,5 +430,17 @@ function jumpToSource(source) {
       }
     })
   }
+}
+
+function handleHistoryReplay(event) {
+  const item = event?.detail
+  if (!item || item.path !== '/chat' || fetching.value || streaming.value) return
+
+  const rawPaper = item.routeState?.paper
+  if (!rawPaper) return
+
+  try {
+    loadPaperObject(JSON.parse(rawPaper))
+  } catch {}
 }
 </script>
