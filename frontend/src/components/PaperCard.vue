@@ -144,6 +144,7 @@ const loadingSummary = ref(false)
 const authors = computed(() => {
   const a = props.paper.authors || []
   const names = a.slice(0, 3).map(x => x.name).filter(Boolean)
+  if (!names.length) return 'Authors unavailable'
   return names.join(', ') + (a.length > 3 ? ' et al.' : '')
 })
 

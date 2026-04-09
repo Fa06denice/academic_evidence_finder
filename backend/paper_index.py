@@ -18,6 +18,12 @@ logger = logging.getLogger(__name__)
 
 _PAPER_COLLECTION = "papers_global"
 _MIN_LOCAL_SCORE = float(os.getenv("PAPER_INDEX_MIN_SCORE", "0.18"))
+_ACADEMIC_STOPWORDS = {
+    "study", "studies", "effect", "effects", "review", "reviews", "systematic",
+    "meta", "meta-analysis", "analysis", "trial", "trials", "randomized",
+    "randomised", "controlled", "cohort", "clinical", "patients", "patient",
+    "association", "associated", "investigation", "findings", "result", "results",
+}
 
 
 def _paper_id(paper: dict) -> str:
@@ -67,15 +73,32 @@ def _paper_document(paper: dict) -> str:
 
 
 def _query_terms(query: str) -> list[str]:
-    return [term for term in re.findall(r"\b[a-z0-9][a-z0-9\-]{2,}\b", query.lower()) if len(term) > 2]
+    terms = [term for term in re.findall(r"\b[a-z0-9][a-z0-9\-]{2,}\b", query.lower()) if len(term) > 2]
+    filtered = [term for term in terms if term not in _ACADEMIC_STOPWORDS]
+    return filtered or terms
 
 
-def _paper_matches_query(paper: dict, query: str) -> bool:
+def _paper_matches_query(paper: dict, query: str) -> tuple[bool, int, int]:
     terms = _query_terms(query)
     if not terms:
-        return True
+        return True, 0, 0
+
+    title = str(paper.get("title") or "").lower()
     haystack = _paper_document(paper).lower()
-    return any(term in haystack for term in terms)
+    overlap = [term for term in terms if term in haystack]
+    title_overlap = [term for term in terms if term in title]
+
+    required = 1
+    if len(terms) >= 4:
+        required = 2
+    if len(terms) >= 7:
+        required = 3
+
+    is_match = len(overlap) >= required
+    if len(terms) >= 4 and not title_overlap:
+        is_match = is_match and len(overlap) >= (required + 1)
+
+    return is_match, len(overlap), len(title_overlap)
 
 
 def paper_index_enabled() -> bool:
@@ -144,6 +167,7 @@ def index_papers(papers: list[dict], cache_manager=None) -> int:
             "citation_count": int(paper.get("citationCount") or 0),
             "doi": str(ext.get("DOI") or ""),
             "abstract": str(paper.get("abstract") or "")[:4000],
+            "authors_json": json.dumps(paper.get("authors") or [], ensure_ascii=False, default=str),
             "paper_json": json.dumps(paper, ensure_ascii=False, default=str),
         })
 
@@ -195,12 +219,20 @@ def search_local_papers(
                 except json.JSONDecodeError:
                     paper = None
         if not isinstance(paper, dict):
+            authors = []
+            raw_authors = metadata.get("authors_json")
+            if isinstance(raw_authors, str) and raw_authors:
+                try:
+                    authors = json.loads(raw_authors)
+                except json.JSONDecodeError:
+                    authors = []
             paper = {
                 "paperId": paper_id,
                 "title": metadata.get("title") or "Unknown",
                 "abstract": metadata.get("abstract") or "",
                 "year": metadata.get("year") if metadata.get("year", -1) != -1 else None,
                 "citationCount": metadata.get("citation_count", 0),
+                "authors": authors if isinstance(authors, list) else [],
                 "externalIds": {"DOI": metadata.get("doi")} if metadata.get("doi") else {},
             }
 
@@ -210,10 +242,13 @@ def search_local_papers(
         local_score = round(1.0 - float(distance or 0.0), 4)
         if local_score < _MIN_LOCAL_SCORE:
             continue
-        if not _paper_matches_query(paper, query):
+        matches_query, overlap_count, title_overlap_count = _paper_matches_query(paper, query)
+        if not matches_query:
             continue
 
         paper["_local_score"] = local_score
+        paper["_local_overlap"] = overlap_count
+        paper["_local_title_overlap"] = title_overlap_count
         papers.append(paper)
         seen.add(paper_id)
 
@@ -221,6 +256,15 @@ def search_local_papers(
             break
 
     if papers:
+        papers.sort(
+            key=lambda p: (
+                p.get("_local_title_overlap", 0),
+                p.get("_local_overlap", 0),
+                p.get("_local_score", 0),
+                p.get("citationCount") or 0,
+            ),
+            reverse=True,
+        )
         logger.info("Local paper index returned %d paper(s) for query: %s", len(papers), query[:120])
     return papers
 

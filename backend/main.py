@@ -127,6 +127,7 @@ def _fetch_papers(
     exclude_ids: Optional[set] = None,
 ) -> tuple[list, Optional[str]]:
     per_query = max(max_papers, 15)
+    local_per_query = min(per_query, max(2, min(max_papers, 4)))
     seen      = set(exclude_ids or [])
     papers    = []
     search_errors: list[str] = []
@@ -134,7 +135,7 @@ def _fetch_papers(
     for q in queries:
         local_batch = search_local_papers(
             q,
-            limit=per_query,
+            limit=local_per_query,
             year_filter=year,
             exclude_ids=seen,
             cache_manager=cache,
@@ -144,11 +145,6 @@ def _fetch_papers(
             if pid and pid not in seen:
                 seen.add(pid)
                 papers.append(p)
-
-    if len(papers) >= max_papers:
-        papers = sorted(papers, key=lambda p: p.get("citationCount") or 0, reverse=True)
-        logger.info("Serving %d paper(s) from local index without Semantic Scholar fallback", len(papers[:max_papers]))
-        return papers[:max_papers], None
 
     for q in queries:
         cached = cache.get_search(q, year)
