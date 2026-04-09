@@ -13,8 +13,8 @@
             <div class="flex items-center gap-3">
               <div class="w-8 h-8 rounded-lg bg-accent/15 flex items-center justify-center text-lg">🔬</div>
               <div>
-                <h2 class="font-semibold text-white text-sm">Evidence Finder — Guide d'utilisation</h2>
-                <p class="text-xs text-muted">Comment fonctionne l'outil et ses limites</p>
+                <h2 class="font-semibold text-white text-sm">Evidence Finder — Quick Start</h2>
+                <p class="text-xs text-muted">Mini guide d’usage</p>
               </div>
             </div>
             <button @click="close" class="text-muted hover:text-white transition-colors p-1 rounded-lg hover:bg-surface2">
@@ -27,34 +27,10 @@
           <!-- Content -->
           <div class="px-6 py-5 space-y-6 text-sm">
 
-            <!-- How it works -->
-            <section>
-              <h3 class="font-semibold text-white mb-3 flex items-center gap-2">
-                <span class="text-base">⚙️</span> Comment ça fonctionne
-              </h3>
-              <div class="space-y-2 text-muted leading-relaxed">
-                <p>L'outil interroge <strong class="text-white">Semantic Scholar</strong> pour trouver des articles scientifiques pertinents, puis un <strong class="text-white">LLM</strong> analyse chaque abstract en deux passes :</p>
-                <div class="mt-3 space-y-2">
-                  <div class="flex gap-3 p-3 rounded-lg bg-surface2 border border-border">
-                    <span class="text-accent font-bold shrink-0">1</span>
-                    <div>
-                      <strong class="text-white">Extraction factuelle</strong> — le LLM identifie les éléments A et B du claim, le résultat principal du paper et sa direction (A&nbsp;>&nbsp;B, B&nbsp;>&nbsp;A, pas de différence, pas de comparaison). Le claim est fourni uniquement pour caler A et B, pas pour juger.
-                    </div>
-                  </div>
-                  <div class="flex gap-3 p-3 rounded-lg bg-surface2 border border-border">
-                    <span class="text-accent font-bold shrink-0">2</span>
-                    <div>
-                      <strong class="text-white">Verdict</strong> — le LLM compare le résultat extrait au claim. Deux garde-fous s'appliquent : <em class="text-white">OUTCOME MISMATCH</em> (un paper sur un outcome différent → NEUTRAL automatique) et <em class="text-white">ANCHOR RULE</em> (chaque requête doit ancrer intervention <strong>et</strong> outcome). Seuls les papers avec un score de pertinence ≥ 4 entrent dans le verdict global.
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-
             <!-- Features -->
             <section>
               <h3 class="font-semibold text-white mb-3 flex items-center gap-2">
-                <span class="text-base">🧰</span> Les fonctionnalités
+                <span class="text-base">🧰</span> Que faire ici ?
               </h3>
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div v-for="f in features" :key="f.icon" class="p-3 rounded-lg bg-surface2 border border-border">
@@ -65,36 +41,33 @@
                   <p class="text-muted text-xs leading-relaxed">{{ f.desc }}</p>
                 </div>
               </div>
-              <div class="mt-3 p-3 rounded-lg bg-accent/5 border border-accent/20 text-xs text-muted leading-relaxed">
-                <strong class="text-accent">Combo recommandé :</strong> Lance d'abord <em>Claim Verifier</em>, génère si besoin une literature review depuis les papers retenus, puis utilise <em>Paper Chat</em> sur les papers les plus intéressants pour approfondir leur contexte.
-              </div>
             </section>
 
-            <!-- Risks -->
+            <!-- Recommended flow -->
             <section>
               <h3 class="font-semibold text-white mb-3 flex items-center gap-2">
-                <span class="text-base">⚠️</span> Risques à connaître
+                <span class="text-base">🚀</span> Flow recommandé
               </h3>
               <div class="space-y-2">
-                <div v-for="r in risks" :key="r.title" class="flex gap-3 p-3 rounded-lg bg-surface2 border border-border">
-                  <span class="text-lg shrink-0">{{ r.emoji }}</span>
+                <div v-for="step in steps" :key="step.title" class="flex gap-3 p-3 rounded-lg bg-surface2 border border-border">
+                  <span class="text-accent font-bold shrink-0">{{ step.n }}</span>
                   <div>
-                    <strong class="text-white text-xs block mb-0.5">{{ r.title }}</strong>
-                    <p class="text-muted text-xs leading-relaxed">{{ r.desc }}</p>
+                    <strong class="text-white text-xs block mb-0.5">{{ step.title }}</strong>
+                    <p class="text-muted text-xs leading-relaxed">{{ step.desc }}</p>
                   </div>
                 </div>
               </div>
             </section>
 
-            <!-- Limitations -->
+            <!-- Keep in mind -->
             <section>
               <h3 class="font-semibold text-white mb-3 flex items-center gap-2">
-                <span class="text-base">🚧</span> Limitations connues
+                <span class="text-base">⚠️</span> À garder en tête
               </h3>
               <ul class="space-y-1.5">
-                <li v-for="l in limitations" :key="l" class="flex gap-2 text-muted text-xs leading-relaxed">
+                <li v-for="tip in tips" :key="tip" class="flex gap-2 text-muted text-xs leading-relaxed">
                   <span class="text-border shrink-0 mt-0.5">›</span>
-                  <span>{{ l }}</span>
+                  <span>{{ tip }}</span>
                 </li>
               </ul>
             </section>
@@ -129,50 +102,42 @@ const features = [
   {
     icon: '🧪',
     name: 'Claim Verifier',
-    desc: "Entre une affirmation scientifique. L'outil cherche des papers, les analyse, rend un verdict global et peut ensuite générer une literature review à partir des papers sélectionnés."
+    desc: "Entre un claim scientifique pour obtenir des papers, une analyse par paper et un verdict global."
   },
   {
     icon: '🔍',
     name: 'Paper Search',
-    desc: "Cherche des papers directement par mots-clés sur Semantic Scholar. Utile pour explorer un domaine sans claim précis."
+    desc: "Cherche des papers par sujet ou par titre exact, puis ouvre un résumé ou le chat du paper."
   },
   {
     icon: '💬',
     name: 'Paper Chat',
-    desc: "Pose des questions à un paper spécifique. Le backend récupère le full text quand il est disponible, construit un contexte RAG sourcé et affiche les passages utilisés."
+    desc: "Pose des questions à un paper spécifique avec réponses sourcées et passages utilisés."
   },
 ]
 
-const risks = [
+const steps = [
   {
-    emoji: '🎰',
-    title: 'Biais de sélection des papers',
-    desc: "Semantic Scholar retourne les papers les plus cités pour les requêtes générées. Des études importantes mais récentes ou peu citées peuvent être manquées."
+    n: '1',
+    title: 'Commencer par Claim Verifier',
+    desc: "Utilise-le quand tu veux tester une affirmation et voir rapidement quels papers vont dans son sens, la nuancent ou la contredisent."
   },
   {
-    emoji: '🔒',
-    title: 'Abstracts manquants (paywall)',
-    desc: "Environ 30–40 % des papers ont leur abstract indisponible via API. Ces papers apparaissent en INSUFFICIENT ou NEUTRAL — non pas parce qu'ils sont hors sujet, mais parce que le contenu n'est pas accessible."
+    n: '2',
+    title: 'Explorer avec Paper Search',
+    desc: "Utilise-le si tu connais déjà le sujet ou le titre d’un paper et que tu veux ouvrir rapidement les bons résultats."
   },
   {
-    emoji: '🤖',
-    title: "Erreurs d'interprétation du LLM",
-    desc: "Malgré les garde-fous OUTCOME MISMATCH et ANCHOR RULE, le LLM peut encore sur-généraliser un résultat étroit ou mal caler A et B sur un claim ambigu. Toujours lire l'explication et vérifier le paper source."
-  },
-  {
-    emoji: '📊',
-    title: "Le verdict global n'est pas une méta-analyse",
-    desc: "Le verdict SUPPORTED/CONTRADICTED est une synthèse qualitative sur les papers pertinents (score ≥ 4), pas une méta-analyse statistique. Des papers de qualité inégale peuvent toujours compter autant dans le décompte."
+    n: '3',
+    title: 'Approfondir avec Paper Chat',
+    desc: "Ouvre ensuite les papers les plus intéressants pour poser des questions précises sur les résultats, la méthodo ou les limites."
   },
 ]
 
-const limitations = [
-  "Les requêtes sont générées en anglais. Un claim en français sera traduit, ce qui peut introduire des nuances perdues.",
-  "Dans Claim Verifier, l'analyse de stance repose surtout sur les métadonnées et abstracts récupérés ; tous les corps d'articles ne sont pas disponibles ou exploitables de la même façon.",
-  "Le score de pertinence (0–10) est une estimation LLM, pas un calcul statistique rigoureux. Le seuil de filtrage est fixé à ≥ 4.",
-  "Les papers très récents (< 6 mois) sont sous-représentés car peu indexés et peu cités.",
-  "Les comparaisons A vs B très générales couvrent un spectre trop large — les papers trouvés portent souvent sur des sous-domaines spécifiques, pas la question globale.",
-  "Le mode Fast (5 papers) donne une vue partielle. Utiliser Deep (15 papers) pour les sujets controversés.",
+const tips = [
+  "Les résultats restent dépendants des papers disponibles et de leur qualité.",
+  "Le verdict du Claim Verifier est une synthèse rapide, pas une méta-analyse formelle.",
+  "Pour confirmer un point important, ouvre toujours le paper et vérifie les sources citées dans Paper Chat.",
 ]
 
 function close() {
