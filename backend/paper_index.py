@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 
 _PAPER_COLLECTION = "papers_global"
 _MIN_LOCAL_SCORE = float(os.getenv("PAPER_INDEX_MIN_SCORE", "0.18"))
+_PAPER_INDEX_LAST_ERROR = ""
 _ACADEMIC_STOPWORDS = {
     "study", "studies", "effect", "effects", "review", "reviews", "systematic",
     "meta", "meta-analysis", "analysis", "trial", "trials", "randomized",
@@ -106,39 +107,50 @@ def paper_index_enabled() -> bool:
     return bool(chromadb and _EMBEDDING_API_KEY and _EMBEDDING_MODEL)
 
 
+def _set_paper_index_error(exc: Exception):
+    global _PAPER_INDEX_LAST_ERROR
+    _PAPER_INDEX_LAST_ERROR = str(exc)
+
+
 def _get_collection():
     if not paper_index_enabled():
         return None
     if not ensure_chroma_storage():
         return None
 
-    client = chromadb.PersistentClient(path=_CHROMA_DIR)
-    embedding_function = OpenAICompatibleEmbeddingFunction(
-        api_key=_EMBEDDING_API_KEY,
-        model=_EMBEDDING_MODEL,
-        base_url=_EMBEDDING_BASE_URL,
-    )
-    return client.get_or_create_collection(
-        name=_PAPER_COLLECTION,
-        embedding_function=embedding_function,
-        metadata={"hnsw:space": "cosine"},
-    )
+    try:
+        client = chromadb.PersistentClient(path=_CHROMA_DIR)
+        embedding_function = OpenAICompatibleEmbeddingFunction(
+            api_key=_EMBEDDING_API_KEY,
+            model=_EMBEDDING_MODEL,
+            base_url=_EMBEDDING_BASE_URL,
+        )
+        return client.get_or_create_collection(
+            name=_PAPER_COLLECTION,
+            embedding_function=embedding_function,
+            metadata={"hnsw:space": "cosine"},
+        )
+    except Exception as exc:
+        _set_paper_index_error(exc)
+        logger.warning("Global paper index unavailable, skipping local-first retrieval: %s", exc)
+        return None
 
 
 def paper_index_stats() -> dict:
     collection = _get_collection()
     if collection is None:
-        return {"enabled": False, "papers": 0}
+        return {"enabled": False, "papers": 0, "last_error": _PAPER_INDEX_LAST_ERROR}
     try:
-        return {"enabled": True, "papers": collection.count()}
+        return {"enabled": True, "papers": collection.count(), "last_error": _PAPER_INDEX_LAST_ERROR}
     except Exception as exc:
+        _set_paper_index_error(exc)
         logger.warning("Could not read paper index stats: %s", exc)
-        return {"enabled": True, "papers": 0}
+        return {"enabled": True, "papers": 0, "last_error": _PAPER_INDEX_LAST_ERROR}
 
 
 def index_papers(papers: list[dict], cache_manager=None) -> int:
     collection = _get_collection()
-    if collection is None or not papers:
+    if not papers:
         return 0
 
     ids = []
@@ -177,9 +189,17 @@ def index_papers(papers: list[dict], cache_manager=None) -> int:
     if not ids:
         return 0
 
-    collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
-    logger.info("Indexed %d papers into global paper index", len(ids))
-    return len(ids)
+    if collection is None:
+        return 0
+
+    try:
+        collection.upsert(ids=ids, documents=documents, metadatas=metadatas)
+        logger.info("Indexed %d papers into global paper index", len(ids))
+        return len(ids)
+    except Exception as exc:
+        _set_paper_index_error(exc)
+        logger.warning("Could not update global paper index, continuing without local-first cache: %s", exc)
+        return 0
 
 
 def search_local_papers(
@@ -189,8 +209,10 @@ def search_local_papers(
     exclude_ids: Optional[set] = None,
     cache_manager=None,
 ) -> list[dict]:
+    if not query.strip():
+        return []
     collection = _get_collection()
-    if collection is None or not query.strip():
+    if collection is None:
         return []
 
     try:
@@ -200,6 +222,7 @@ def search_local_papers(
             include=["metadatas", "distances"],
         )
     except Exception as exc:
+        _set_paper_index_error(exc)
         logger.warning("Local paper index query failed, skipping local-first retrieval: %s", exc)
         return []
 

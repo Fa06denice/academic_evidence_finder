@@ -42,6 +42,7 @@ _CHROMA_DIR = os.getenv("CHROMA_DIR", ".chroma")
 _EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
 _EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "https://api.openai.com/v1")
 _EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+_CHROMA_LAST_ERROR = ""
 
 _STOPWORDS = {
     "a", "about", "after", "all", "also", "an", "and", "are", "as", "at", "be",
@@ -170,6 +171,11 @@ class OpenAICompatibleEmbeddingFunction(EmbeddingFunction):
             return []
         resp = self.client.embeddings.create(model=self.model, input=texts)
         return [item.embedding for item in resp.data]
+
+
+def _set_chroma_error(exc: Exception):
+    global _CHROMA_LAST_ERROR
+    _CHROMA_LAST_ERROR = str(exc)
 
 
 def _tokenize(text: str) -> list[str]:
@@ -1088,17 +1094,22 @@ def _get_chroma_collection(paper: dict):
     if not ensure_chroma_storage():
         return None
 
-    client = chromadb.PersistentClient(path=_CHROMA_DIR)
-    embedding_function = OpenAICompatibleEmbeddingFunction(
-        api_key=_EMBEDDING_API_KEY,
-        model=_EMBEDDING_MODEL,
-        base_url=_EMBEDDING_BASE_URL,
-    )
-    return client.get_or_create_collection(
-        name=_collection_name_for_paper(paper),
-        embedding_function=embedding_function,
-        metadata={"hnsw:space": "cosine"},
-    )
+    try:
+        client = chromadb.PersistentClient(path=_CHROMA_DIR)
+        embedding_function = OpenAICompatibleEmbeddingFunction(
+            api_key=_EMBEDDING_API_KEY,
+            model=_EMBEDDING_MODEL,
+            base_url=_EMBEDDING_BASE_URL,
+        )
+        return client.get_or_create_collection(
+            name=_collection_name_for_paper(paper),
+            embedding_function=embedding_function,
+            metadata={"hnsw:space": "cosine"},
+        )
+    except Exception as exc:
+        _set_chroma_error(exc)
+        logger.warning("Chroma collection unavailable for paper chat, falling back to lexical retrieval: %s", exc)
+        return None
 
 
 def index_chunks_in_chroma(paper: dict, chunks: list[dict]) -> bool:
@@ -1106,9 +1117,15 @@ def index_chunks_in_chroma(paper: dict, chunks: list[dict]) -> bool:
     if collection is None or not chunks:
         return False
 
-    if collection.count() > 0:
-        logger.info("Chroma collection already populated for %s (%d chunks)", collection.name, collection.count())
-        return True
+    try:
+        existing_count = collection.count()
+        if existing_count > 0:
+            logger.info("Chroma collection already populated for %s (%d chunks)", collection.name, existing_count)
+            return True
+    except Exception as exc:
+        _set_chroma_error(exc)
+        logger.warning("Could not inspect Chroma collection, falling back to lexical retrieval: %s", exc)
+        return False
 
     ids = [chunk["chunk_id"] for chunk in chunks]
     docs = [chunk["text"] for chunk in chunks]
@@ -1124,21 +1141,38 @@ def index_chunks_in_chroma(paper: dict, chunks: list[dict]) -> bool:
             "word_end": int(chunk.get("word_end") or 0),
         })
 
-    collection.add(ids=ids, documents=docs, metadatas=metadatas)
-    logger.info("Indexed %d chunks into Chroma collection %s", len(chunks), collection.name)
-    return True
+    try:
+        collection.add(ids=ids, documents=docs, metadatas=metadatas)
+        logger.info("Indexed %d chunks into Chroma collection %s", len(chunks), collection.name)
+        return True
+    except Exception as exc:
+        _set_chroma_error(exc)
+        logger.warning("Could not index chunks into Chroma, falling back to lexical retrieval: %s", exc)
+        return False
 
 
 def query_chroma_sources(paper: dict, question: str, max_sources: int = _MAX_CHUNKS) -> list[dict]:
     collection = _get_chroma_collection(paper)
-    if collection is None or collection.count() == 0:
+    if collection is None:
+        return []
+    try:
+        if collection.count() == 0:
+            return []
+    except Exception as exc:
+        _set_chroma_error(exc)
+        logger.warning("Could not inspect Chroma before querying, falling back to lexical retrieval: %s", exc)
         return []
 
-    result = collection.query(
-        query_texts=[question],
-        n_results=max_sources,
-        include=["documents", "metadatas", "distances"],
-    )
+    try:
+        result = collection.query(
+            query_texts=[question],
+            n_results=max_sources,
+            include=["documents", "metadatas", "distances"],
+        )
+    except Exception as exc:
+        _set_chroma_error(exc)
+        logger.warning("Could not query Chroma, falling back to lexical retrieval: %s", exc)
+        return []
 
     docs = (result.get("documents") or [[]])[0]
     metadatas = (result.get("metadatas") or [[]])[0]
@@ -1369,6 +1403,7 @@ def chroma_debug_info() -> dict:
         "dir": _CHROMA_DIR,
         "dir_exists": os.path.isdir(_CHROMA_DIR),
         "dir_writable": ensure_chroma_storage(),
+        "last_error": _CHROMA_LAST_ERROR,
     }
 
 
