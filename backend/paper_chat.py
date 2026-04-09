@@ -38,7 +38,8 @@ _RAG_CHUNK_OVERLAP = 45
 _DISPLAY_BLOCK_WORDS = 140
 _PROFILE_CONTEXT_BLOCKS = 18
 _PROFILE_CONTEXT_CHARS = 45000
-_CHROMA_DIR = os.getenv("CHROMA_DIR", ".chroma")
+_DEFAULT_CHROMA_ROOT = os.getenv("CHROMA_DIR", ".chroma")
+_CHROMA_DIR_CHAT = os.getenv("CHROMA_DIR_CHAT", os.path.join(_DEFAULT_CHROMA_ROOT, "chat"))
 _EMBEDDING_API_KEY = os.getenv("EMBEDDING_API_KEY") or os.getenv("OPENAI_API_KEY") or ""
 _EMBEDDING_BASE_URL = os.getenv("EMBEDDING_BASE_URL", "https://api.openai.com/v1")
 _EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
@@ -343,21 +344,22 @@ def _best_effort_make_writable(path: str):
         pass
 
 
-def ensure_chroma_storage() -> bool:
+def ensure_chroma_storage(path: Optional[str] = None) -> bool:
+    storage_dir = path or _CHROMA_DIR_CHAT
     if not chromadb:
         return False
 
     try:
-        os.makedirs(_CHROMA_DIR, exist_ok=True)
-        _best_effort_make_writable(_CHROMA_DIR)
+        os.makedirs(storage_dir, exist_ok=True)
+        _best_effort_make_writable(storage_dir)
 
-        probe_path = os.path.join(_CHROMA_DIR, ".write_probe")
+        probe_path = os.path.join(storage_dir, ".write_probe")
         with open(probe_path, "w", encoding="utf-8") as probe:
             probe.write("ok")
         os.remove(probe_path)
         return True
     except OSError as exc:
-        logger.warning("Chroma storage is not writable at %s: %s", _CHROMA_DIR, exc)
+        logger.warning("Chroma storage is not writable at %s: %s", storage_dir, exc)
         return False
 
 
@@ -1091,11 +1093,11 @@ def _collection_name_for_paper(paper: dict) -> str:
 def _get_chroma_collection(paper: dict):
     if not chroma_vector_enabled():
         return None
-    if not ensure_chroma_storage():
+    if not ensure_chroma_storage(_CHROMA_DIR_CHAT):
         return None
 
     try:
-        client = chromadb.PersistentClient(path=_CHROMA_DIR)
+        client = chromadb.PersistentClient(path=_CHROMA_DIR_CHAT)
         embedding_function = OpenAICompatibleEmbeddingFunction(
             api_key=_EMBEDDING_API_KEY,
             model=_EMBEDDING_MODEL,
@@ -1391,18 +1393,20 @@ def build_sources_payload(sources: list[dict], answer_text: str = "") -> dict:
     return {"all": payload, "used": used, "used_ids": used_ids}
 
 
-def clear_chroma_store():
-    if chromadb and os.path.isdir(_CHROMA_DIR):
-        shutil.rmtree(_CHROMA_DIR, ignore_errors=True)
-        logger.info("Cleared Chroma store at %s", _CHROMA_DIR)
+def clear_chroma_store(path: Optional[str] = None):
+    storage_dir = path or _CHROMA_DIR_CHAT
+    if chromadb and os.path.isdir(storage_dir):
+        shutil.rmtree(storage_dir, ignore_errors=True)
+        logger.info("Cleared Chroma store at %s", storage_dir)
 
 
-def chroma_debug_info() -> dict:
+def chroma_debug_info(path: Optional[str] = None) -> dict:
+    storage_dir = path or _CHROMA_DIR_CHAT
     return {
         "enabled": chroma_vector_enabled(),
-        "dir": _CHROMA_DIR,
-        "dir_exists": os.path.isdir(_CHROMA_DIR),
-        "dir_writable": ensure_chroma_storage(),
+        "dir": storage_dir,
+        "dir_exists": os.path.isdir(storage_dir),
+        "dir_writable": ensure_chroma_storage(storage_dir),
         "last_error": _CHROMA_LAST_ERROR,
     }
 

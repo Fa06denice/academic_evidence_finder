@@ -15,7 +15,13 @@ from pydantic import BaseModel
 from analyzer import PaperAnalyzer
 from scholar_client import SemanticScholarClient
 from cache_manager import CacheManager
-from paper_index import backfill_paper_index, index_papers, paper_index_stats, search_local_papers
+from paper_index import (
+    backfill_paper_index,
+    clear_paper_index_store,
+    index_papers,
+    paper_index_stats,
+    search_local_papers,
+)
 from verify_graph import langgraph_verify_available, stream_verify_claim_graph
 from paper_chat import (
     chroma_debug_info,
@@ -909,4 +915,5 @@ def clear_cache():
     _rag_cache.clear()
     _paper_profile_cache.clear()
     clear_chroma_store()
+    clear_paper_index_store()
     return {"status": "cleared"}

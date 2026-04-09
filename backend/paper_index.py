@@ -5,13 +5,14 @@ import re
 from typing import Optional
 
 from paper_chat import (
-    _CHROMA_DIR,
+    _DEFAULT_CHROMA_ROOT,
     _EMBEDDING_API_KEY,
     _EMBEDDING_BASE_URL,
     _EMBEDDING_MODEL,
     OpenAICompatibleEmbeddingFunction,
     _normalize_ws,
     chromadb,
+    clear_chroma_store,
     ensure_chroma_storage,
 )
 
@@ -19,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _PAPER_COLLECTION = "papers_global"
 _MIN_LOCAL_SCORE = float(os.getenv("PAPER_INDEX_MIN_SCORE", "0.18"))
+_CHROMA_DIR_INDEX = os.getenv("CHROMA_DIR_INDEX", os.path.join(_DEFAULT_CHROMA_ROOT, "index"))
 _PAPER_INDEX_LAST_ERROR = ""
 _ACADEMIC_STOPWORDS = {
     "study", "studies", "effect", "effects", "review", "reviews", "systematic",
@@ -115,11 +117,11 @@ def _set_paper_index_error(exc: Exception):
 def _get_collection():
     if not paper_index_enabled():
         return None
-    if not ensure_chroma_storage():
+    if not ensure_chroma_storage(_CHROMA_DIR_INDEX):
         return None
 
     try:
-        client = chromadb.PersistentClient(path=_CHROMA_DIR)
+        client = chromadb.PersistentClient(path=_CHROMA_DIR_INDEX)
         embedding_function = OpenAICompatibleEmbeddingFunction(
             api_key=_EMBEDDING_API_KEY,
             model=_EMBEDDING_MODEL,
@@ -139,13 +141,34 @@ def _get_collection():
 def paper_index_stats() -> dict:
     collection = _get_collection()
     if collection is None:
-        return {"enabled": False, "papers": 0, "last_error": _PAPER_INDEX_LAST_ERROR}
+        return {
+            "enabled": False,
+            "papers": 0,
+            "last_error": _PAPER_INDEX_LAST_ERROR,
+            "dir": _CHROMA_DIR_INDEX,
+            "dir_exists": os.path.isdir(_CHROMA_DIR_INDEX),
+            "dir_writable": ensure_chroma_storage(_CHROMA_DIR_INDEX),
+        }
     try:
-        return {"enabled": True, "papers": collection.count(), "last_error": _PAPER_INDEX_LAST_ERROR}
+        return {
+            "enabled": True,
+            "papers": collection.count(),
+            "last_error": _PAPER_INDEX_LAST_ERROR,
+            "dir": _CHROMA_DIR_INDEX,
+            "dir_exists": os.path.isdir(_CHROMA_DIR_INDEX),
+            "dir_writable": ensure_chroma_storage(_CHROMA_DIR_INDEX),
+        }
     except Exception as exc:
         _set_paper_index_error(exc)
         logger.warning("Could not read paper index stats: %s", exc)
-        return {"enabled": True, "papers": 0, "last_error": _PAPER_INDEX_LAST_ERROR}
+        return {
+            "enabled": True,
+            "papers": 0,
+            "last_error": _PAPER_INDEX_LAST_ERROR,
+            "dir": _CHROMA_DIR_INDEX,
+            "dir_exists": os.path.isdir(_CHROMA_DIR_INDEX),
+            "dir_writable": ensure_chroma_storage(_CHROMA_DIR_INDEX),
+        }
 
 
 def index_papers(papers: list[dict], cache_manager=None) -> int:
@@ -328,3 +351,7 @@ def backfill_paper_index(cache_manager) -> int:
     if count:
         logger.info("Backfilled %d paper(s) into the global paper index from cache", count)
     return count
+
+
+def clear_paper_index_store():
+    clear_chroma_store(_CHROMA_DIR_INDEX)
