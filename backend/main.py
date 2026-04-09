@@ -22,7 +22,11 @@ from paper_index import (
     paper_index_stats,
     search_local_papers,
 )
-from verify_graph import langgraph_verify_available, stream_verify_claim_graph
+from verify_graph import (
+    langgraph_verify_available,
+    stream_literature_review_graph,
+    stream_verify_claim_graph,
+)
 from paper_chat import (
     chroma_debug_info,
     classify_question_intent,
@@ -483,7 +487,7 @@ def verify_claim(req: ClaimRequest):
 
 @app.post("/api/review")
 def literature_review(req: TopicRequest):
-    def generate():
+    def legacy_generate():
         try:
             yield _sse("progress", {"message": "Generating search queries…", "step": 1, "total": 3})
             base_queries = None
@@ -640,7 +644,35 @@ def literature_review(req: TopicRequest):
             yield _sse("error", {"message": str(exc)})
             yield _sse("done", {})
 
-    return StreamingResponse(generate(), media_type="text/event-stream",
+    def graph_generate():
+        try:
+            logger.info("literature_review using LangGraph workflow")
+            for chunk in stream_literature_review_graph(
+                topic=req.topic,
+                max_papers=req.max_papers,
+                year_filter=req.year_filter,
+                analyzer=analyzer,
+                cache=cache,
+                fetch_papers=_fetch_papers,
+                enrich_queries=_enrich_queries,
+                run_with_heartbeat=_run_with_heartbeat,
+            ):
+                event_type = chunk.get("type")
+                if not event_type:
+                    continue
+                payload = {k: v for k, v in chunk.items() if k != "type"}
+                yield _sse(event_type, payload)
+
+            yield _sse("done", {})
+        except Exception as exc:
+            logger.exception("literature_review graph error")
+            yield _sse("error", {"message": str(exc)})
+            yield _sse("done", {})
+
+    if not langgraph_verify_available():
+        logger.warning("LangGraph unavailable; /api/review is using the legacy workflow")
+    generator = graph_generate if langgraph_verify_available() else legacy_generate
+    return StreamingResponse(generator(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
 
 

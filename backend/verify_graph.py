@@ -17,8 +17,8 @@ MIN_RELEVANCE_SCORE = 3
 MAX_RETRIES = 1
 
 
-class VerifyState(TypedDict, total=False):
-    claim: str
+class ResearchState(TypedDict, total=False):
+    subject: str
     max_papers: int
     year_filter: Optional[str]
     base_queries: list[str]
@@ -29,18 +29,27 @@ class VerifyState(TypedDict, total=False):
     retry_round: int
     relevant_count: int
     search_error: Optional[str]
-    overall: dict
     abort: bool
     decision: str
+    overall: dict
+    review: str
 
 
 def langgraph_verify_available() -> bool:
     return bool(StateGraph and get_stream_writer and START is not None and END is not None)
 
 
-def stream_verify_claim_graph(
+def _tuple_results(state: ResearchState) -> list[tuple[dict, dict]]:
+    return [
+        (item["paper"], item["analysis"])
+        for item in (state.get("all_results") or [])
+        if isinstance(item, dict) and item.get("paper") and item.get("analysis")
+    ]
+
+
+def _stream_research_graph(
     *,
-    claim: str,
+    subject: str,
     max_papers: int,
     year_filter: Optional[str],
     analyzer,
@@ -48,6 +57,15 @@ def stream_verify_claim_graph(
     fetch_papers: Callable,
     enrich_queries: Callable,
     run_with_heartbeat: Callable,
+    topic_mode: bool,
+    total_steps: int,
+    search_step: int,
+    analysis_step: int,
+    final_step: int,
+    final_message: str,
+    final_event_type: Literal["verdict", "review"],
+    final_builder: Callable[[ResearchState], tuple[Callable, tuple]],
+    insufficiency_warning: Callable[[ResearchState], str],
 ) -> Iterable[dict]:
     if not langgraph_verify_available():
         raise RuntimeError("LangGraph is not installed")
@@ -56,26 +74,27 @@ def stream_verify_claim_graph(
         writer = get_stream_writer()
         writer({"type": event_type, **payload})
 
-    def generate_queries(state: VerifyState) -> dict:
-        emit("progress", message="Generating search queries…", step=1, total=4)
+    def generate_queries(state: ResearchState) -> dict:
+        emit("progress", message="Generating search queries…", step=1, total=total_steps)
         queries = None
         for update in run_with_heartbeat(
             analyzer.transform_query,
-            state["claim"],
-            topic_mode=False,
+            state["subject"],
+            topic_mode=topic_mode,
             max_papers=state["max_papers"],
             message="Generating search queries…",
             step=1,
-            total=4,
+            total=total_steps,
         ):
             if update["kind"] == "heartbeat":
                 emit("progress", **update["value"])
             else:
                 queries = update["value"]
 
+        safe_queries = queries or [state["subject"]]
         return {
-            "base_queries": queries or [state["claim"]],
-            "current_queries": queries or [state["claim"]],
+            "base_queries": safe_queries,
+            "current_queries": safe_queries,
             "retry_round": 0,
             "pending_papers": [],
             "all_results": [],
@@ -83,26 +102,28 @@ def stream_verify_claim_graph(
             "relevant_count": 0,
             "search_error": None,
             "abort": False,
+            "decision": "",
         }
 
-    def search_candidates(state: VerifyState) -> dict:
-        current_queries = state.get("current_queries") or state.get("base_queries") or [state["claim"]]
+    def search_candidates(state: ResearchState) -> dict:
+        current_queries = state.get("current_queries") or state.get("base_queries") or [state["subject"]]
         retry_round = state.get("retry_round", 0)
         seen_ids = set(state.get("seen_ids") or [])
-        all_results = state.get("all_results") or []
         relevant_count = int(state.get("relevant_count") or 0)
 
         if retry_round == 0:
-            emit("progress", message="Searching literature…", step=2, total=4)
+            emit("progress", message="Searching literature…", step=search_step, total=total_steps)
             requested = state["max_papers"]
+            heartbeat_message = "Searching literature…"
         else:
             requested = max(1, state["max_papers"] - relevant_count)
             emit(
                 "progress",
                 message=f"Only {relevant_count} relevant papers found — searching deeper…",
-                step=3,
-                total=4,
+                step=analysis_step,
+                total=total_steps,
             )
+            heartbeat_message = "Searching deeper…"
 
         papers = None
         search_error = None
@@ -112,9 +133,9 @@ def stream_verify_claim_graph(
             requested,
             state.get("year_filter"),
             exclude_ids=seen_ids if seen_ids else None,
-            message="Searching literature…" if retry_round == 0 else "Searching deeper…",
-            step=2 if retry_round == 0 else 3,
-            total=4,
+            message=heartbeat_message,
+            step=search_step if retry_round == 0 else analysis_step,
+            total=total_steps,
         ):
             if update["kind"] == "heartbeat":
                 emit("progress", **update["value"])
@@ -133,7 +154,6 @@ def stream_verify_claim_graph(
 
         if retry_round == 0 and papers:
             emit("papers", data=papers)
-
         if retry_round > 0 and not papers and search_error:
             emit("warning", message=search_error)
 
@@ -143,34 +163,34 @@ def stream_verify_claim_graph(
             "abort": False,
         }
 
-    def analyze_candidates(state: VerifyState) -> dict:
+    def analyze_candidates(state: ResearchState) -> dict:
         papers = state.get("pending_papers") or []
         if not papers:
             return {}
 
-        claim_text = state["claim"]
+        subject_text = state["subject"]
         all_results = list(state.get("all_results") or [])
         seen_ids = set(state.get("seen_ids") or [])
         relevant_count = int(state.get("relevant_count") or 0)
         base_index = len(all_results)
         total = base_index + len(papers)
 
-        emit("progress", message=f"Analysing {len(papers)} papers…", step=3, total=4)
+        emit("progress", message=f"Analysing {len(papers)} papers…", step=analysis_step, total=total_steps)
 
         for offset, paper in enumerate(papers):
             pid = paper.get("paperId", "")
             seen_ids.add(pid)
 
-            cached = cache.get_analysis(pid, claim_text) if pid else None
+            cached = cache.get_analysis(pid, subject_text) if pid else None
             analysis = cached
             if not analysis:
                 for update in run_with_heartbeat(
                     analyzer.analyze_paper,
                     paper,
-                    claim_text,
+                    subject_text,
                     message=f"Analysing paper {base_index + offset + 1} / {total}…",
-                    step=3,
-                    total=4,
+                    step=analysis_step,
+                    total=total_steps,
                 ):
                     if update["kind"] == "heartbeat":
                         emit("progress", **update["value"])
@@ -178,7 +198,7 @@ def stream_verify_claim_graph(
                         analysis = update["value"]
 
             if not cached and pid:
-                cache.set_analysis(pid, claim_text, analysis)
+                cache.set_analysis(pid, subject_text, analysis)
 
             emit(
                 "analysis",
@@ -199,7 +219,7 @@ def stream_verify_claim_graph(
             "pending_papers": [],
         }
 
-    def critique_results(state: VerifyState) -> dict:
+    def critique_results(state: ResearchState) -> dict:
         all_results = state.get("all_results") or []
         relevant_count = int(state.get("relevant_count") or 0)
         retry_round = int(state.get("retry_round") or 0)
@@ -212,72 +232,54 @@ def stream_verify_claim_graph(
             return {"decision": "synthesize"}
 
         if retry_round < MAX_RETRIES and (pending_papers or all_results):
-            next_retry = retry_round + 1
-            next_queries = enrich_queries(state.get("base_queries") or [state["claim"]], retry_round)
             return {
                 "decision": "refine",
-                "retry_round": next_retry,
-                "current_queries": next_queries,
+                "retry_round": retry_round + 1,
+                "current_queries": enrich_queries(state.get("base_queries") or [state["subject"]], retry_round),
             }
 
         if relevant_count < state["max_papers"]:
-            emit(
-                "warning",
-                message=(
-                    f"Only {relevant_count} of the {state['max_papers']} requested papers had sufficient "
-                    "relevance to the claim after the available search rounds. "
-                    "The verdict is based on available evidence."
-                ),
-            )
+            emit("warning", message=insufficiency_warning(state))
         return {"decision": "synthesize"}
 
-    def refine_queries(state: VerifyState) -> dict:
-        emit("progress", message="Refining search strategy…", step=3, total=4)
-        return {
-            "pending_papers": [],
-            "abort": False,
-        }
+    def refine_queries(state: ResearchState) -> dict:
+        emit("progress", message="Refining search strategy…", step=analysis_step, total=total_steps)
+        return {"pending_papers": [], "abort": False}
 
-    def synthesize_verdict(state: VerifyState) -> dict:
-        tuple_results = [
-            (item["paper"], item["analysis"])
-            for item in (state.get("all_results") or [])
-            if isinstance(item, dict) and item.get("paper") and item.get("analysis")
-        ]
-
-        emit("progress", message="Synthesizing verdict…", step=4, total=4)
-        overall = None
+    def finalize_output(state: ResearchState) -> dict:
+        fn, args = final_builder(state)
+        emit("progress", message=final_message, step=final_step, total=total_steps)
+        payload = None
         for update in run_with_heartbeat(
-            analyzer.overall_verdict,
-            state["claim"],
-            tuple_results,
-            message="Synthesizing verdict…",
-            step=4,
-            total=4,
+            fn,
+            *args,
+            message=final_message,
+            step=final_step,
+            total=total_steps,
         ):
             if update["kind"] == "heartbeat":
                 emit("progress", **update["value"])
             else:
-                overall = update["value"]
+                payload = update["value"]
 
-        emit("verdict", data=overall)
-        return {"overall": overall}
+        emit(final_event_type, data=payload)
+        return {"overall" if final_event_type == "verdict" else "review": payload}
 
-    def route_after_critique(state: VerifyState) -> Literal["refine_queries", "synthesize_verdict", END]:
+    def route_after_critique(state: ResearchState) -> Literal["refine_queries", "finalize_output", END]:
         decision = state.get("decision")
         if decision == "refine":
             return "refine_queries"
         if decision == "synthesize":
-            return "synthesize_verdict"
+            return "finalize_output"
         return END
 
-    graph = StateGraph(VerifyState)
+    graph = StateGraph(ResearchState)
     graph.add_node("generate_queries", generate_queries)
     graph.add_node("search_candidates", search_candidates)
     graph.add_node("analyze_candidates", analyze_candidates)
     graph.add_node("critique_results", critique_results)
     graph.add_node("refine_queries", refine_queries)
-    graph.add_node("synthesize_verdict", synthesize_verdict)
+    graph.add_node("finalize_output", finalize_output)
 
     graph.add_edge(START, "generate_queries")
     graph.add_edge("generate_queries", "search_candidates")
@@ -286,14 +288,14 @@ def stream_verify_claim_graph(
     graph.add_conditional_edges(
         "critique_results",
         route_after_critique,
-        ["refine_queries", "synthesize_verdict", END],
+        ["refine_queries", "finalize_output", END],
     )
     graph.add_edge("refine_queries", "search_candidates")
-    graph.add_edge("synthesize_verdict", END)
+    graph.add_edge("finalize_output", END)
 
     compiled = graph.compile()
-    initial_state: VerifyState = {
-        "claim": claim,
+    initial_state: ResearchState = {
+        "subject": subject,
         "max_papers": max_papers,
         "year_filter": year_filter,
     }
@@ -306,3 +308,88 @@ def stream_verify_claim_graph(
             continue
         if isinstance(chunk, dict) and chunk.get("type"):
             yield chunk
+
+
+def stream_verify_claim_graph(
+    *,
+    claim: str,
+    max_papers: int,
+    year_filter: Optional[str],
+    analyzer,
+    cache,
+    fetch_papers: Callable,
+    enrich_queries: Callable,
+    run_with_heartbeat: Callable,
+) -> Iterable[dict]:
+    def final_builder(state: ResearchState) -> tuple[Callable, tuple]:
+        return analyzer.overall_verdict, (state["subject"], _tuple_results(state))
+
+    def insufficiency_warning(state: ResearchState) -> str:
+        relevant_count = int(state.get("relevant_count") or 0)
+        return (
+            f"Only {relevant_count} of the {state['max_papers']} requested papers had sufficient "
+            "relevance to the claim after the available search rounds. "
+            "The verdict is based on available evidence."
+        )
+
+    return _stream_research_graph(
+        subject=claim,
+        max_papers=max_papers,
+        year_filter=year_filter,
+        analyzer=analyzer,
+        cache=cache,
+        fetch_papers=fetch_papers,
+        enrich_queries=enrich_queries,
+        run_with_heartbeat=run_with_heartbeat,
+        topic_mode=False,
+        total_steps=4,
+        search_step=2,
+        analysis_step=3,
+        final_step=4,
+        final_message="Synthesizing verdict…",
+        final_event_type="verdict",
+        final_builder=final_builder,
+        insufficiency_warning=insufficiency_warning,
+    )
+
+
+def stream_literature_review_graph(
+    *,
+    topic: str,
+    max_papers: int,
+    year_filter: Optional[str],
+    analyzer,
+    cache,
+    fetch_papers: Callable,
+    enrich_queries: Callable,
+    run_with_heartbeat: Callable,
+) -> Iterable[dict]:
+    def final_builder(state: ResearchState) -> tuple[Callable, tuple]:
+        return analyzer.literature_review, (state["subject"], _tuple_results(state))
+
+    def insufficiency_warning(state: ResearchState) -> str:
+        relevant_count = int(state.get("relevant_count") or 0)
+        return (
+            f"Only {relevant_count} of the {state['max_papers']} requested papers were sufficiently "
+            "relevant to the topic after the available search rounds."
+        )
+
+    return _stream_research_graph(
+        subject=topic,
+        max_papers=max_papers,
+        year_filter=year_filter,
+        analyzer=analyzer,
+        cache=cache,
+        fetch_papers=fetch_papers,
+        enrich_queries=enrich_queries,
+        run_with_heartbeat=run_with_heartbeat,
+        topic_mode=True,
+        total_steps=3,
+        search_step=2,
+        analysis_step=2,
+        final_step=3,
+        final_message="Writing literature review…",
+        final_event_type="review",
+        final_builder=final_builder,
+        insufficiency_warning=insufficiency_warning,
+    )
