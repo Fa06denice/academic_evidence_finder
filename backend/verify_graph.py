@@ -39,6 +39,57 @@ def langgraph_verify_available() -> bool:
     return bool(StateGraph and get_stream_writer and START is not None and END is not None)
 
 
+def _research_graph_mermaid(final_label: str, warning_text: str) -> str:
+    return "\n".join([
+        "flowchart TD",
+        '    A([Start]) --> B[Generate Queries]',
+        '    B --> C[Search Candidates]',
+        '    C --> D[Analyze Candidates]',
+        '    D --> E{Critique Results}',
+        f'    E -->|enough evidence| F[{final_label}]',
+        '    E -->|need refinement| G[Refine Queries]',
+        f'    E -->|stop with limited evidence| H[{warning_text}]',
+        '    G --> C',
+        '    F --> I([End])',
+        '    H --> F',
+    ])
+
+
+def workflow_graphs() -> dict:
+    return {
+        "claim_verifier": {
+            "available": langgraph_verify_available(),
+            "nodes": [
+                "generate_queries",
+                "search_candidates",
+                "analyze_candidates",
+                "critique_results",
+                "refine_queries",
+                "finalize_verdict",
+            ],
+            "mermaid": _research_graph_mermaid(
+                final_label="Synthesize Verdict",
+                warning_text="Warn: limited evidence",
+            ),
+        },
+        "literature_review": {
+            "available": langgraph_verify_available(),
+            "nodes": [
+                "generate_queries",
+                "search_candidates",
+                "analyze_candidates",
+                "critique_results",
+                "refine_queries",
+                "finalize_review",
+            ],
+            "mermaid": _research_graph_mermaid(
+                final_label="Write Literature Review",
+                warning_text="Warn: limited relevant papers",
+            ),
+        },
+    }
+
+
 def _tuple_results(state: ResearchState) -> list[tuple[dict, dict]]:
     return [
         (item["paper"], item["analysis"])

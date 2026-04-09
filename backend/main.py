@@ -26,6 +26,7 @@ from verify_graph import (
     langgraph_verify_available,
     stream_literature_review_graph,
     stream_verify_claim_graph,
+    workflow_graphs,
 )
 from paper_chat import (
     chroma_debug_info,
@@ -272,6 +273,11 @@ def health():
         "paper_index": paper_index_stats(),
         "chroma": chroma_debug_info(),
     }
+
+
+@app.get("/api/graphs")
+def graphs():
+    return workflow_graphs()
 
 
 @app.post("/api/verify")
