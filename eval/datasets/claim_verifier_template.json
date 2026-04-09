@@ -1,0 +1,17 @@
+{
+  "name": "claim_verifier_template",
+  "description": "Template dataset for evaluating /api/verify. Replace the sample claims with your own annotated gold set.",
+  "cases": [
+    {
+      "id": "claim_template_001",
+      "claim": "Replace this with a scientific claim.",
+      "max_papers": 7,
+      "year_filter": null,
+      "expected_verdicts": ["SUPPORTED"],
+      "min_analysed_papers": 4,
+      "min_relevant_papers": 2,
+      "relevance_threshold": 3,
+      "notes": "Use one or more acceptable verdicts if the evidence is genuinely mixed."
+    }
+  ]
+}

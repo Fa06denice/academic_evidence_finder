@@ -1,0 +1,29 @@
+{
+  "name": "paper_chat_template",
+  "description": "Template dataset for grounded Paper Chat evaluation. Provide a full paper object so /api/paper/fetch can resolve PDF/full text reliably.",
+  "cases": [
+    {
+      "id": "paper_chat_template_001",
+      "paper": {
+        "paperId": "replace_with_paper_id",
+        "title": "Replace with exact paper title",
+        "year": 2024,
+        "authors": [],
+        "abstract": "Replace with abstract if available",
+        "externalIds": {
+          "DOI": "replace-with-doi-if-known"
+        },
+        "openAccessPdf": {
+          "url": "replace-with-pdf-or-doi-url-if-known"
+        }
+      },
+      "question": "What methodology did the authors use?",
+      "required_citations": 1,
+      "require_full_text": false,
+      "must_include_any": ["cross-sectional", "randomized", "cohort", "trial"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Use must_include_any or must_include_all to approximate grounded correctness."
+    }
+  ]
+}

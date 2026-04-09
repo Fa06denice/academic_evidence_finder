@@ -1,0 +1,68 @@
+{
+  "name": "paper_chat_sample",
+  "description": "Starter grounded-chat dataset using real paper metadata already seen in the project. Replace or extend with your own gold cases before final evaluation.",
+  "cases": [
+    {
+      "id": "paper_chat_smoke_001",
+      "paper": {
+        "paperId": "b5ecf4471ef3185e84e7cf07c5200981994590bb",
+        "title": "Impact of Coffee Intake on Sleep Quality Among Adults in the Jazan Region, Saudi Arabia: A Cross-Sectional Study",
+        "year": 2025,
+        "authors": [
+          {"authorId": "2262318824", "name": "Mohammad A. Jareebi"},
+          {"authorId": "2377440722", "name": "Waleed A Alabdali"},
+          {"authorId": "2383053384", "name": "Fahad A Alwan"}
+        ],
+        "abstract": "Background: Coffee consumption is a widespread habit globally, and especially among Saudis. However, its association with sleep quality remains unclear. This study aimed to evaluate the effect of coffee consumption on sleep quality among adults in Jazan, Saudi Arabia. Methods: This cross-sectional study utilized an electronic survey targeting residents of the Jazan region aged 18 years and older.",
+        "externalIds": {
+          "PubMedCentral": "12559867",
+          "DOI": "10.7759/cureus.93386",
+          "PubMed": "41164018"
+        },
+        "openAccessPdf": {
+          "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12559867/pdf",
+          "status": "GOLD",
+          "license": "CCBY"
+        }
+      },
+      "question": "What study design did the authors use?",
+      "required_citations": 1,
+      "require_full_text": false,
+      "must_include_any": ["cross-sectional"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Checks that Paper Chat answers a direct methodological question with grounded citations."
+    },
+    {
+      "id": "paper_chat_smoke_002",
+      "paper": {
+        "paperId": "b5ecf4471ef3185e84e7cf07c5200981994590bb",
+        "title": "Impact of Coffee Intake on Sleep Quality Among Adults in the Jazan Region, Saudi Arabia: A Cross-Sectional Study",
+        "year": 2025,
+        "authors": [
+          {"authorId": "2262318824", "name": "Mohammad A. Jareebi"},
+          {"authorId": "2377440722", "name": "Waleed A Alabdali"},
+          {"authorId": "2383053384", "name": "Fahad A Alwan"}
+        ],
+        "abstract": "Background: Coffee consumption is a widespread habit globally, and especially among Saudis. However, its association with sleep quality remains unclear. This study aimed to evaluate the effect of coffee consumption on sleep quality among adults in Jazan, Saudi Arabia. Methods: This cross-sectional study utilized an electronic survey targeting residents of the Jazan region aged 18 years and older.",
+        "externalIds": {
+          "PubMedCentral": "12559867",
+          "DOI": "10.7759/cureus.93386",
+          "PubMed": "41164018"
+        },
+        "openAccessPdf": {
+          "url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC12559867/pdf",
+          "status": "GOLD",
+          "license": "CCBY"
+        }
+      },
+      "question": "Which region and population did the study target?",
+      "required_citations": 1,
+      "require_full_text": false,
+      "must_include_any": ["Jazan", "Saudi Arabia", "adults"],
+      "must_include_all": [],
+      "must_not_include": [],
+      "notes": "Checks grounded extraction of setting / population details."
+    }
+  ]
+}

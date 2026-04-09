@@ -1,0 +1,28 @@
+{
+  "name": "claim_verifier_sample",
+  "description": "Starter dataset for smoke and demo-level evaluation. Verdict expectations are intentionally permissive; replace with a stricter gold set before final grading.",
+  "cases": [
+    {
+      "id": "claim_smoke_001",
+      "claim": "Caffeine worsens sleep quality in adults.",
+      "max_papers": 6,
+      "year_filter": null,
+      "expected_verdicts": ["SUPPORTED", "PARTIALLY_SUPPORTED", "MIXED"],
+      "min_analysed_papers": 4,
+      "min_relevant_papers": 2,
+      "relevance_threshold": 3,
+      "notes": "Broad, literature-rich topic. Useful to check retrieval quality and verdict synthesis."
+    },
+    {
+      "id": "claim_smoke_002",
+      "claim": "Mindfulness-based cognitive therapy improves obsessive-compulsive disorder symptoms.",
+      "max_papers": 5,
+      "year_filter": null,
+      "expected_verdicts": ["SUPPORTED", "PARTIALLY_SUPPORTED"],
+      "min_analysed_papers": 3,
+      "min_relevant_papers": 1,
+      "relevance_threshold": 3,
+      "notes": "Useful for validating that the system can find clearly intervention-driven evidence."
+    }
+  ]
+}
