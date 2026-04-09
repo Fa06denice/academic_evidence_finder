@@ -47,9 +47,16 @@ logger = logging.getLogger(__name__)
 
 app = FastAPI(title="Academic Evidence Finder API", version="1.0.0")
 
+
+def _cors_allow_origins() -> list[str]:
+    raw = os.getenv("CORS_ALLOW_ORIGINS", "").strip()
+    if raw:
+        return [origin.strip() for origin in raw.split(",") if origin.strip()]
+    return ["*"]
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_cors_allow_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
