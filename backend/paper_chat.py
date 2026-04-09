@@ -106,10 +106,12 @@ STRICT RULES:
 1. Answer ONLY using the retrieved sources above.
 2. Every factual claim must cite at least one source ID immediately after it, e.g. [S1] or [S1, S2].
 3. Never cite a source ID that was not provided.
-4. If the retrieved sources do not contain enough evidence, say so explicitly.
-5. If the paper content available is only an abstract, mention that once and stay within that limit.
-6. Prefer direct, compact answers. Lead with the answer, then the evidence.
-7. When quoting, quote verbatim and keep the citation right after the quote.
+4. If no single passage directly answers the question, synthesize the answer from multiple retrieved passages and cite each claim.
+5. Distinguish direct statements from careful synthesis. Do not invent conclusions not supported by the retrieved sources.
+6. Only say that the evidence is insufficient when the retrieved sources genuinely do not support a reasonable grounded answer.
+7. If the paper content available is only an abstract, mention that once and stay within that limit.
+8. Prefer direct, compact answers. Lead with the answer, then the evidence.
+9. When quoting, quote verbatim and keep the citation right after the quote.
 """
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -165,6 +167,112 @@ def _tokenize(text: str) -> list[str]:
         tok for tok in re.findall(r"\b[a-z0-9][a-z0-9\-]{1,}\b", (text or "").lower())
         if tok not in _STOPWORDS
     ]
+
+
+def _question_profile(question: str) -> dict:
+    q = (question or "").lower()
+    profile = {
+        "expanded_query": question,
+        "preferred_sections": [],
+        "discouraged_sections": [],
+        "extra_sources": 0,
+    }
+
+    findings_triggers = (
+        "main finding", "main findings", "key finding", "key findings",
+        "takeaway", "takeaways", "what did they find", "what were the findings",
+        "what are the findings", "main result", "main results", "primary outcome",
+        "conclusion", "conclusions",
+    )
+    methods_triggers = (
+        "method", "methods", "methodology", "study design", "design",
+        "participants", "sample", "statistical analysis",
+    )
+    limitations_triggers = (
+        "limitation", "limitations", "weakness", "weaknesses", "bias",
+        "confound", "drawback", "caveat", "caveats",
+    )
+
+    if any(trigger in q for trigger in findings_triggers):
+        profile["expanded_query"] = (
+            f"{question} results findings conclusion discussion primary outcome key result"
+        ).strip()
+        profile["preferred_sections"] = [
+            "abstract", "results", "findings", "discussion", "conclusion", "summary",
+        ]
+        profile["discouraged_sections"] = ["methods", "limitations", "references"]
+        profile["extra_sources"] = 2
+        return profile
+
+    if any(trigger in q for trigger in methods_triggers):
+        profile["expanded_query"] = (
+            f"{question} methods methodology study design participants measures statistical analysis"
+        ).strip()
+        profile["preferred_sections"] = [
+            "methods", "methodology", "materials and methods", "study design", "participants",
+        ]
+        profile["discouraged_sections"] = ["discussion", "conclusion", "limitations"]
+        return profile
+
+    if any(trigger in q for trigger in limitations_triggers):
+        profile["expanded_query"] = (
+            f"{question} limitations weaknesses bias caveats interpretation"
+        ).strip()
+        profile["preferred_sections"] = ["limitations", "discussion", "conclusion"]
+        profile["discouraged_sections"] = ["methods"]
+        return profile
+
+    return profile
+
+
+def _section_weight(locator: str, profile: dict) -> float:
+    locator_lower = (locator or "").lower()
+    weight = 0.0
+
+    for preferred in profile.get("preferred_sections", []):
+        if preferred in locator_lower:
+            weight += 1.5
+
+    for discouraged in profile.get("discouraged_sections", []):
+        if discouraged in locator_lower:
+            weight -= 1.0
+
+    return weight
+
+
+def _rank_sources_for_question(sources: list[dict], question: str, max_sources: int) -> list[dict]:
+    if not sources:
+        return []
+
+    profile = _question_profile(question)
+    ranked = []
+    for idx, source in enumerate(sources):
+        base_score = float(source.get("score", 0.0))
+        locator = source.get("locator") or source.get("section") or "Document"
+        ranked.append((
+            base_score + _section_weight(locator, profile),
+            idx,
+            source,
+        ))
+
+    ranked.sort(key=lambda item: (item[0], -item[1]), reverse=True)
+
+    selected: list[dict] = []
+    seen_ids: set[str] = set()
+    for _, _, source in ranked:
+        chunk_id = source.get("chunk_id")
+        if chunk_id and chunk_id in seen_ids:
+            continue
+        if chunk_id:
+            seen_ids.add(chunk_id)
+        selected.append(dict(source))
+        if len(selected) >= max_sources:
+            break
+
+    for idx, source in enumerate(selected, start=1):
+        source["source_id"] = f"S{idx}"
+
+    return selected
 
 
 def _is_heading(line: str) -> bool:
@@ -924,7 +1032,9 @@ def _retrieve_relevant_sources_lexical(chunks: list[dict], question: str,
     if not chunks:
         return []
 
-    query_terms = _tokenize(question)
+    profile = _question_profile(question)
+    retrieval_query = profile.get("expanded_query") or question
+    query_terms = _tokenize(retrieval_query)
     if not query_terms:
         selected = chunks[:max_sources]
         return [
@@ -945,7 +1055,7 @@ def _retrieve_relevant_sources_lexical(chunks: list[dict], question: str,
     b = 0.75
 
     query_phrases = [
-        phrase.lower() for phrase in re.findall(r'"([^"]+)"', question)
+        phrase.lower() for phrase in re.findall(r'"([^"]+)"', retrieval_query)
         if phrase and len(phrase.split()) >= 2
     ]
 
@@ -958,6 +1068,7 @@ def _retrieve_relevant_sources_lexical(chunks: list[dict], question: str,
         dl = max(len(tokens), 1)
         text_lower = chunk["text"].lower()
         locator_lower = (chunk.get("locator") or "").lower()
+        section_bonus = _section_weight(locator_lower, profile)
 
         for term in query_terms:
             freq = tf.get(term, 0)
@@ -976,6 +1087,8 @@ def _retrieve_relevant_sources_lexical(chunks: list[dict], question: str,
 
         if chunk.get("page") == 1:
             score += 0.1
+
+        score += section_bonus
 
         if score > 0:
             scored.append((score, chunk))
@@ -1007,29 +1120,32 @@ def _retrieve_relevant_sources_lexical(chunks: list[dict], question: str,
             if len(selected) >= max_sources:
                 break
 
-    for idx, chunk in enumerate(selected, start=1):
-        chunk["source_id"] = f"S{idx}"
-
-    return selected
+    return _rank_sources_for_question(selected, question, max_sources=max_sources)
 
 
 def retrieve_relevant_sources(chunks: list[dict], question: str,
                               max_sources: int = _MAX_CHUNKS,
                               paper: Optional[dict] = None) -> list[dict]:
-    lexical_sources = _retrieve_relevant_sources_lexical(chunks, question, max_sources=max_sources)
+    profile = _question_profile(question)
+    target_sources = max_sources + int(profile.get("extra_sources", 0))
+    lexical_sources = _retrieve_relevant_sources_lexical(chunks, question, max_sources=target_sources)
 
     if not paper or not chroma_vector_enabled():
-        return lexical_sources
+        return _rank_sources_for_question(lexical_sources, question, max_sources=max_sources)
 
     try:
         index_chunks_in_chroma(paper, chunks)
-        vector_sources = query_chroma_sources(paper, question, max_sources=max_sources)
+        vector_sources = query_chroma_sources(
+            paper,
+            profile.get("expanded_query") or question,
+            max_sources=target_sources,
+        )
     except Exception as exc:
         logger.warning("Chroma retrieval failed, falling back to lexical retrieval: %s", exc)
-        return lexical_sources
+        return _rank_sources_for_question(lexical_sources, question, max_sources=max_sources)
 
     if not vector_sources:
-        return lexical_sources
+        return _rank_sources_for_question(lexical_sources, question, max_sources=max_sources)
 
     merged: list[dict] = []
     seen_ids: set[str] = set()
@@ -1041,13 +1157,9 @@ def retrieve_relevant_sources(chunks: list[dict], question: str,
         if chunk_id:
             seen_ids.add(chunk_id)
         merged.append(dict(source))
-        if len(merged) >= max_sources:
+        if len(merged) >= target_sources:
             break
-
-    for idx, source in enumerate(merged, start=1):
-        source["source_id"] = f"S{idx}"
-
-    return merged
+    return _rank_sources_for_question(merged, question, max_sources=max_sources)
 
 
 def build_rag_system_prompt(paper: dict, question: str, sources: list[dict], source: str = "unknown") -> str:
