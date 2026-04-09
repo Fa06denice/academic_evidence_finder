@@ -191,6 +191,45 @@ def _is_heading(line: str) -> bool:
 def _try_fetch_pdf(url: str) -> Optional[bytes]:
     if not url:
         return None
+
+
+def _best_effort_make_writable(path: str):
+    try:
+        if os.path.isdir(path):
+            os.chmod(path, 0o775)
+            for root, dirs, files in os.walk(path):
+                for dirname in dirs:
+                    try:
+                        os.chmod(os.path.join(root, dirname), 0o775)
+                    except OSError:
+                        pass
+                for filename in files:
+                    try:
+                        os.chmod(os.path.join(root, filename), 0o664)
+                    except OSError:
+                        pass
+        elif os.path.exists(path):
+            os.chmod(path, 0o664)
+    except OSError:
+        pass
+
+
+def ensure_chroma_storage() -> bool:
+    if not chromadb:
+        return False
+
+    try:
+        os.makedirs(_CHROMA_DIR, exist_ok=True)
+        _best_effort_make_writable(_CHROMA_DIR)
+
+        probe_path = os.path.join(_CHROMA_DIR, ".write_probe")
+        with open(probe_path, "w", encoding="utf-8") as probe:
+            probe.write("ok")
+        os.remove(probe_path)
+        return True
+    except OSError as exc:
+        logger.warning("Chroma storage is not writable at %s: %s", _CHROMA_DIR, exc)
+        return False
     r = _get(url)
     if r and "pdf" in r.headers.get("content-type", "").lower():
         return r.content
@@ -802,6 +841,8 @@ def _collection_name_for_paper(paper: dict) -> str:
 def _get_chroma_collection(paper: dict):
     if not chroma_vector_enabled():
         return None
+    if not ensure_chroma_storage():
+        return None
 
     client = chromadb.PersistentClient(path=_CHROMA_DIR)
     embedding_function = OpenAICompatibleEmbeddingFunction(
@@ -1064,6 +1105,7 @@ def chroma_debug_info() -> dict:
         "enabled": chroma_vector_enabled(),
         "dir": _CHROMA_DIR,
         "dir_exists": os.path.isdir(_CHROMA_DIR),
+        "dir_writable": ensure_chroma_storage(),
     }
 
 

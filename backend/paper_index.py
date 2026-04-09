@@ -12,6 +12,7 @@ from paper_chat import (
     OpenAICompatibleEmbeddingFunction,
     _normalize_ws,
     chromadb,
+    ensure_chroma_storage,
 )
 
 logger = logging.getLogger(__name__)
@@ -108,6 +109,8 @@ def paper_index_enabled() -> bool:
 def _get_collection():
     if not paper_index_enabled():
         return None
+    if not ensure_chroma_storage():
+        return None
 
     client = chromadb.PersistentClient(path=_CHROMA_DIR)
     embedding_function = OpenAICompatibleEmbeddingFunction(
@@ -197,7 +200,7 @@ def search_local_papers(
             include=["metadatas", "distances"],
         )
     except Exception as exc:
-        logger.warning("Local paper index query failed: %s", exc)
+        logger.warning("Local paper index query failed, skipping local-first retrieval: %s", exc)
         return []
 
     metadatas = (result.get("metadatas") or [[]])[0]
