@@ -14,7 +14,7 @@
               <div class="w-8 h-8 rounded-lg bg-accent/15 flex items-center justify-center text-lg">🔬</div>
               <div>
                 <h2 class="font-semibold text-white text-sm">Evidence Finder — Quick Start</h2>
-                <p class="text-xs text-muted">Mini guide d’usage</p>
+                <p class="text-xs text-muted">Short usage guide</p>
               </div>
             </div>
             <button @click="close" class="text-muted hover:text-white transition-colors p-1 rounded-lg hover:bg-surface2">
@@ -30,7 +30,7 @@
             <!-- Features -->
             <section>
               <h3 class="font-semibold text-white mb-3 flex items-center gap-2">
-                <span class="text-base">🧰</span> Que faire ici ?
+                <span class="text-base">🧰</span> What can you do here?
               </h3>
               <div class="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 <div v-for="f in features" :key="f.icon" class="p-3 rounded-lg bg-surface2 border border-border">
@@ -46,7 +46,7 @@
             <!-- Recommended flow -->
             <section>
               <h3 class="font-semibold text-white mb-3 flex items-center gap-2">
-                <span class="text-base">🚀</span> Flow recommandé
+                <span class="text-base">🚀</span> Recommended flow
               </h3>
               <div class="space-y-2">
                 <div v-for="step in steps" :key="step.title" class="flex gap-3 p-3 rounded-lg bg-surface2 border border-border">
@@ -62,7 +62,7 @@
             <!-- Keep in mind -->
             <section>
               <h3 class="font-semibold text-white mb-3 flex items-center gap-2">
-                <span class="text-base">⚠️</span> À garder en tête
+                <span class="text-base">⚠️</span> Keep in mind
               </h3>
               <ul class="space-y-1.5">
                 <li v-for="tip in tips" :key="tip" class="flex gap-2 text-muted text-xs leading-relaxed">
@@ -78,11 +78,11 @@
           <div class="sticky bottom-0 bg-surface border-t border-border px-6 py-4 flex items-center justify-between gap-4">
             <label class="flex items-center gap-2 cursor-pointer text-xs text-muted hover:text-white transition-colors">
               <input type="checkbox" v-model="dontShow" class="accent-accent rounded" />
-              Ne plus afficher au démarrage
+              Do not show this on startup
             </label>
             <button @click="close"
               class="px-4 py-2 rounded-lg bg-accent hover:bg-accent/80 text-white text-xs font-semibold transition-colors">
-              J'ai compris — Commencer
+              Got it — Start
             </button>
           </div>
 
@@ -102,42 +102,42 @@ const features = [
   {
     icon: '🧪',
     name: 'Claim Verifier',
-    desc: "Entre un claim scientifique pour obtenir des papers, une analyse par paper et un verdict global."
+    desc: "Enter a scientific claim to get relevant papers, per-paper analysis, and an overall verdict."
   },
   {
     icon: '🔍',
     name: 'Paper Search',
-    desc: "Cherche des papers par sujet ou par titre exact, puis ouvre un résumé ou le chat du paper."
+    desc: "Search papers by topic or exact title, then open a summary or jump into paper chat."
   },
   {
     icon: '💬',
     name: 'Paper Chat',
-    desc: "Pose des questions à un paper spécifique avec réponses sourcées et passages utilisés."
+    desc: "Ask questions about a specific paper with grounded answers and cited passages."
   },
 ]
 
 const steps = [
   {
     n: '1',
-    title: 'Commencer par Claim Verifier',
-    desc: "Utilise-le quand tu veux tester une affirmation et voir rapidement quels papers vont dans son sens, la nuancent ou la contredisent."
+    title: 'Start with Claim Verifier',
+    desc: "Use it when you want to test a scientific claim and quickly see which papers support it, qualify it, or contradict it."
   },
   {
     n: '2',
-    title: 'Explorer avec Paper Search',
-    desc: "Utilise-le si tu connais déjà le sujet ou le titre d’un paper et que tu veux ouvrir rapidement les bons résultats."
+    title: 'Explore with Paper Search',
+    desc: "Use it when you already know the topic or the title of a paper and want to open the right results quickly."
   },
   {
     n: '3',
-    title: 'Approfondir avec Paper Chat',
-    desc: "Ouvre ensuite les papers les plus intéressants pour poser des questions précises sur les résultats, la méthodo ou les limites."
+    title: 'Go deeper with Paper Chat',
+    desc: "Then open the most relevant papers to ask focused questions about the results, methodology, or limitations."
   },
 ]
 
 const tips = [
-  "Les résultats restent dépendants des papers disponibles et de leur qualité.",
-  "Le verdict du Claim Verifier est une synthèse rapide, pas une méta-analyse formelle.",
-  "Pour confirmer un point important, ouvre toujours le paper et vérifie les sources citées dans Paper Chat.",
+  "Results still depend on the available papers and on their quality.",
+  "The Claim Verifier verdict is a fast synthesis, not a formal meta-analysis.",
+  "For any important point, open the paper and verify the cited sources in Paper Chat.",
 ]
 
 function close() {
