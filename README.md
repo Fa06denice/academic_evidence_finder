@@ -42,7 +42,7 @@ through a grounded RAG pipeline.
 ### External Services
 
 - `Semantic Scholar` for paper discovery
-- `Groq / Kimi` for the main LLM workflows
+- `Groq / GPT-OSS 120B` for the main LLM workflows
 - `OpenAI embeddings` for vector retrieval in `Paper Chat`
 
 ## Retrieval and RAG

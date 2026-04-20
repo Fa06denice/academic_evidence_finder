@@ -439,7 +439,7 @@ def _is_vague_claim(claim: str) -> bool:
     return not bool(_VERB_RE.search(claim))
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  KEY POOL — Kimi-only, round-robin thread-safe
+#  KEY POOL — GPT-OSS 120B on Groq, round-robin thread-safe
 #  Reads LLM_API_KEY, LLM_API_KEY_2 … LLM_API_KEY_10 from env
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -457,13 +457,13 @@ def _load_key_pool() -> list:
             keys.append(k)
     if not keys:
         raise ValueError("No Groq API key found. Set LLM_API_KEY in your environment.")
-    logger.info("Kimi key pool loaded: %d key(s)", len(keys))
+    logger.info("LLM key pool loaded: %d key(s)", len(keys))
     return keys
 
 class _KeyPool:
-    """Thread-safe round-robin pool of Groq clients, all pointing to Kimi."""
+    """Thread-safe round-robin pool of Groq clients for the configured LLM."""
 
-    MODEL = "moonshotai/kimi-k2-instruct"
+    MODEL = "openai/gpt-oss-120b"
     BASE_URL = "https://api.groq.com/openai/v1"
 
     def __init__(self, keys: list):
@@ -474,7 +474,7 @@ class _KeyPool:
         self._cycle = itertools.cycle(range(len(self._clients)))
         self._lock  = threading.Lock()
         self._n     = len(self._clients)
-        logger.info("KeyPool initialised with %d Kimi client(s)", self._n)
+        logger.info("KeyPool initialised with %d LLM client(s)", self._n)
 
     def next_client(self) -> OpenAI:
         with self._lock:
@@ -484,7 +484,7 @@ class _KeyPool:
     def call(self, messages: list, temperature: float = 0.1,
              max_tokens: int = 1000, retries: int = 6) -> str:
         """
-        Call Kimi with automatic retry + key rotation on 429.
+        Call the configured LLM with automatic retry + key rotation on 429.
         Exponential back-off with jitter: 0.4s, 0.8s, 1.6s, 3.2s, 6.4s, 12.8s
         With 10 keys in round-robin, consecutive calls hit different keys so
         most 429s resolve immediately on the next client.
@@ -518,7 +518,7 @@ class _KeyPool:
                     logger.error("LLM error attempt %d/%d: %s", attempt + 1, retries, err[:200])
 
         raise ValueError(
-            f"All {retries} Kimi attempts failed. Last error: {last_exc}"
+            f"All {retries} LLM attempts failed. Last error: {last_exc}"
         )
 
 
@@ -550,7 +550,7 @@ class PaperAnalyzer:
 
     @property
     def current_model(self) -> str:
-        return f"groq/{_KeyPool.MODEL} [{self._pool._n} key(s)]"
+        return f"{_KeyPool.MODEL} via groq [{self._pool._n} key(s)]"
 
     # ── low-level LLM call ────────────────────────────────────────────────────
 
